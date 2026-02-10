@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copilot API Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+  <!-- Login Screen -->
+  <div id="login-screen" class="login-container">
+    <div class="login-card">
+      <div class="login-header">
+        <i class="fas fa-robot"></i>
+        <h1>Copilot API</h1>
+        <p>Dashboard Management</p>
+      </div>
+      <form id="login-form">
+        <div class="form-group">
+          <label><i class="fas fa-user"></i> Username</label>
+          <input type="text" id="login-username" required placeholder="admin">
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-lock"></i> Password</label>
+          <input type="password" id="login-password" required placeholder="••••••">
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">
+          <i class="fas fa-sign-in-alt"></i> Đăng nhập
+        </button>
+        <div id="login-error" class="error-msg hidden"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="hidden">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <i class="fas fa-robot"></i>
+        <h2>Copilot API</h2>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-page="overview">
+          <i class="fas fa-chart-line"></i> <span>Tổng quan</span>
+        </a>
+        <a href="#" class="nav-item" data-page="api-keys">
+          <i class="fas fa-key"></i> <span>API Keys</span>
+        </a>
+        <a href="#" class="nav-item" data-page="github-tokens">
+          <i class="fab fa-github"></i> <span>GitHub Tokens</span>
+        </a>
+        <a href="#" class="nav-item" data-page="logs">
+          <i class="fas fa-list-alt"></i> <span>Request Logs</span>
+        </a>
+        <a href="#" class="nav-item" data-page="settings">
+          <i class="fas fa-cog"></i> <span>Cài đặt</span>
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="proxy-status" id="proxy-status">
+          <span class="status-dot offline"></span>
+          <span>Checking...</span>
+        </div>
+        <button class="btn btn-sm btn-logout" id="btn-logout">
+          <i class="fas fa-sign-out-alt"></i> Đăng xuất
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <header class="top-bar">
+        <button class="sidebar-toggle" id="sidebar-toggle">
+          <i class="fas fa-bars"></i>
+        </button>
+        <h1 id="page-title">Tổng quan</h1>
+        <div class="user-info">
+          <i class="fas fa-user-circle"></i>
+          <span id="user-name">admin</span>
+        </div>
+      </header>
+
+      <!-- Overview Page -->
+      <section id="page-overview" class="page active">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon blue"><i class="fas fa-key"></i></div>
+            <div class="stat-info">
+              <h3 id="stat-total-keys">0</h3>
+              <p>Tổng API Keys</p>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon green"><i class="fas fa-check-circle"></i></div>
+            <div class="stat-info">
+              <h3 id="stat-active-keys">0</h3>
+              <p>Keys hoạt động</p>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon purple"><i class="fas fa-exchange-alt"></i></div>
+            <div class="stat-info">
+              <h3 id="stat-total-requests">0</h3>
+              <p>Tổng requests</p>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon orange"><i class="fas fa-clock"></i></div>
+            <div class="stat-info">
+              <h3 id="stat-today-requests">0</h3>
+              <p>Requests hôm nay</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2><i class="fas fa-server"></i> Proxy Status</h2>
+            <button class="btn btn-sm" onclick="checkProxyStatus()">
+              <i class="fas fa-sync"></i> Refresh
+            </button>
+          </div>
+          <div class="card-body" id="proxy-details">
+            <p class="loading">Đang kiểm tra...</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2><i class="fas fa-history"></i> Request gần đây</h2>
+          </div>
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table" id="recent-logs-table">
+                <thead>
+                  <tr>
+                    <th>Thời gian</th>
+                    <th>API Key</th>
+                    <th>Endpoint</th>
+                    <th>Method</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- API Keys Page -->
+      <section id="page-api-keys" class="page hidden">
+        <div class="card">
+          <div class="card-header">
+            <h2><i class="fas fa-key"></i> Quản lý API Keys</h2>
+            <button class="btn btn-primary" onclick="showCreateKeyModal()">
+              <i class="fas fa-plus"></i> Tạo API Key
+            </button>
+          </div>
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table" id="api-keys-table">
+                <thead>
+                  <tr>
+                    <th>Tên</th>
+                    <th>Key</th>
+                    <th>Quyền</th>
+                    <th>Rate Limit</th>
+                    <th>Requests</th>
+                    <th>Trạng thái</th>
+                    <th>Hết hạn</th>
+                    <th>Hành động</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- GitHub Tokens Page -->
+      <section id="page-github-tokens" class="page hidden">
+        <div class="card">
+          <div class="card-header">
+            <h2><i class="fab fa-github"></i> GitHub Tokens</h2>
+            <div class="header-actions">
+              <button class="btn btn-primary" onclick="startGitHubAuth()">
+                <i class="fas fa-plus"></i> Tạo Token mới (OAuth)
+              </button>
+              <button class="btn" onclick="showAddTokenModal()">
+                <i class="fas fa-paste"></i> Nhập Token thủ công
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="info-box">
+              <i class="fas fa-info-circle"></i>
+              <p>GitHub token dùng để xác thực với GitHub Copilot. Nhấn <strong>"Tạo Token mới"</strong> để xác thực trực tiếp qua GitHub OAuth, hoặc <strong>"Nhập Token thủ công"</strong> nếu đã có token sẵn.</p>
+            </div>
+            <div class="table-responsive">
+              <table class="table" id="github-tokens-table">
+                <thead>
+                  <tr>
+                    <th>Tên</th>
+                    <th>Token</th>
+                    <th>Trạng thái</th>
+                    <th>Ngày tạo</th>
+                    <th>Hành động</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs Page -->
+      <section id="page-logs" class="page hidden">
+        <div class="card">
+          <div class="card-header">
+            <h2><i class="fas fa-list-alt"></i> Request Logs</h2>
+            <div class="header-actions">
+              <select id="log-days" class="select-sm" onchange="loadLogs()">
+                <option value="7">7 ngày</option>
+                <option value="14">14 ngày</option>
+                <option value="30">30 ngày</option>
+              </select>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="chart-container">
+              <canvas id="requests-chart" height="200"></canvas>
+            </div>
+            <div class="table-responsive" id="logs-container">
+              <p class="loading">Đang tải...</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings Page -->
+      <section id="page-settings" class="page hidden">
+        <div class="card">
+          <div class="card-header">
+            <h2><i class="fas fa-cog"></i> Cài đặt</h2>
+          </div>
+          <div class="card-body">
+            <div class="settings-section">
+              <h3><i class="fas fa-lock"></i> Đổi mật khẩu</h3>
+              <form id="change-password-form">
+                <div class="form-group">
+                  <label>Mật khẩu hiện tại</label>
+                  <input type="password" id="current-password" required>
+                </div>
+                <div class="form-group">
+                  <label>Mật khẩu mới</label>
+                  <input type="password" id="new-password" required minlength="6">
+                </div>
+                <div class="form-group">
+                  <label>Xác nhận mật khẩu</label>
+                  <input type="password" id="confirm-password" required>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                  <i class="fas fa-save"></i> Lưu thay đổi
+                </button>
+              </form>
+            </div>
+
+            <div class="settings-section">
+              <h3><i class="fas fa-book"></i> Hướng dẫn sử dụng API</h3>
+              <div class="code-block">
+                <p><strong>Endpoint:</strong></p>
+                <code id="api-endpoint-display">http://localhost:4141</code>
+                <p style="margin-top:12px"><strong>Authentication Header:</strong></p>
+                <code>Authorization: Bearer YOUR_API_KEY</code>
+                <p style="margin-top:12px"><strong>Ví dụ cURL:</strong></p>
+                <pre>curl -X POST http://localhost:4141/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer cpk_your_key_here" \
+  -d '{
+    "model": "gpt-4.1",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Create API Key Modal -->
+  <div id="modal-create-key" class="modal hidden">
+    <div class="modal-overlay" onclick="closeModal('modal-create-key')"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2><i class="fas fa-key"></i> Tạo API Key mới</h2>
+        <button class="modal-close" onclick="closeModal('modal-create-key')">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <form id="create-key-form">
+        <div class="form-group">
+          <label>Tên API Key</label>
+          <input type="text" id="key-name" required placeholder="VD: Production Key">
+        </div>
+        <div class="form-group">
+          <label>API Key <span style="color:var(--text-muted);font-weight:400">(tự nhập hoặc để trống để tạo tự động)</span></label>
+          <input type="text" id="key-custom" placeholder="Nhập API key của bạn hoặc để trống...">
+        </div>
+        <div class="form-group">
+          <label>Quyền truy cập</label>
+          <div class="checkbox-group">
+            <label class="checkbox"><input type="checkbox" value="chat" checked> Chat Completions</label>
+            <label class="checkbox"><input type="checkbox" value="models" checked> Models</label>
+            <label class="checkbox"><input type="checkbox" value="embeddings" checked> Embeddings</label>
+            <label class="checkbox"><input type="checkbox" value="messages" checked> Messages (Anthropic)</label>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Rate Limit (req/phút, 0 = không giới hạn)</label>
+            <input type="number" id="key-rate-limit" value="0" min="0">
+          </div>
+          <div class="form-group">
+            <label>Hết hạn sau (ngày, trống = vĩnh viễn)</label>
+            <input type="number" id="key-expires" min="1" placeholder="Không hết hạn">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">
+          <i class="fas fa-plus"></i> Tạo API Key
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Show API Key Modal -->
+  <div id="modal-show-key" class="modal hidden">
+    <div class="modal-overlay" onclick="closeModal('modal-show-key')"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2><i class="fas fa-check-circle" style="color: #10b981"></i> API Key đã tạo</h2>
+        <button class="modal-close" onclick="closeModal('modal-show-key')">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="warning-box">
+          <i class="fas fa-exclamation-triangle"></i>
+          <p><strong>Lưu ý:</strong> API Key chỉ hiển thị một lần. Hãy sao chép và lưu lại ngay!</p>
+        </div>
+        <div class="key-display">
+          <code id="new-key-value"></code>
+          <button class="btn btn-sm" onclick="copyKey()">
+            <i class="fas fa-copy"></i> Copy
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add GitHub Token Modal -->
+  <div id="modal-add-token" class="modal hidden">
+    <div class="modal-overlay" onclick="closeModal('modal-add-token')"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2><i class="fab fa-github"></i> Thêm GitHub Token</h2>
+        <button class="modal-close" onclick="closeModal('modal-add-token')">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <form id="add-token-form">
+        <div class="form-group">
+          <label>Tên</label>
+          <input type="text" id="token-name" required placeholder="VD: Main Account">
+        </div>
+        <div class="form-group">
+          <label>GitHub Token</label>
+          <input type="text" id="token-value" required placeholder="ghp_...">
+        </div>
+        <div class="info-box">
+          <i class="fas fa-info-circle"></i>
+          <p>Token này được lấy từ lệnh <code>copilot-api auth --show-token</code></p>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">
+          <i class="fas fa-plus"></i> Thêm Token
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- GitHub OAuth Auth Flow Modal -->
+  <div id="modal-github-auth" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2><i class="fab fa-github"></i> Xác thực GitHub</h2>
+        <button class="modal-close" onclick="cancelGitHubAuth()">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <!-- Step 1: Enter name -->
+        <div id="auth-step-name">
+          <div class="form-group">
+            <label>Tên cho token này</label>
+            <input type="text" id="auth-token-name" placeholder="VD: My GitHub Account" value="">
+          </div>
+          <button class="btn btn-primary btn-full" onclick="initiateGitHubAuth()">
+            <i class="fab fa-github"></i> Bắt đầu xác thực
+          </button>
+        </div>
+
+        <!-- Step 2: Show code & wait -->
+        <div id="auth-step-code" class="hidden">
+          <div class="auth-flow-container">
+            <div class="auth-step-indicator">
+              <div class="step-circle active">1</div>
+              <div class="step-line"></div>
+              <div class="step-circle" id="step2-circle">2</div>
+            </div>
+
+            <div class="auth-instruction">
+              <p><strong>Bước 1:</strong> Mở link bên dưới trong trình duyệt:</p>
+              <a id="auth-verification-url" href="#" target="_blank" class="auth-link">
+                <i class="fas fa-external-link-alt"></i> <span id="auth-url-text"></span>
+              </a>
+            </div>
+
+            <div class="auth-instruction">
+              <p><strong>Bước 2:</strong> Nhập mã code sau vào trang GitHub:</p>
+              <div class="auth-code-display">
+                <span id="auth-user-code" class="auth-code"></span>
+                <button class="btn btn-sm" onclick="copyAuthCode()">
+                  <i class="fas fa-copy"></i> Copy
+                </button>
+              </div>
+            </div>
+
+            <div class="auth-status" id="auth-status">
+              <div class="auth-spinner"></div>
+              <span id="auth-status-text">Đang chờ bạn xác nhận trên GitHub...</span>
+            </div>
+
+            <div class="auth-timer">
+              <i class="fas fa-clock"></i> Hết hạn sau: <span id="auth-timer-countdown">--:--</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Success -->
+        <div id="auth-step-success" class="hidden">
+          <div class="auth-success">
+            <i class="fas fa-check-circle"></i>
+            <h3>Xác thực thành công!</h3>
+            <p id="auth-success-msg">Token đã được tạo và lưu.</p>
+            <button class="btn btn-primary btn-full" onclick="closeGitHubAuthSuccess()">
+              <i class="fas fa-check"></i> Hoàn tất
+            </button>
+          </div>
+        </div>
+
+        <!-- Error state -->
+        <div id="auth-step-error" class="hidden">
+          <div class="auth-error">
+            <i class="fas fa-exclamation-circle"></i>
+            <h3>Xác thực thất bại</h3>
+            <p id="auth-error-msg"></p>
+            <button class="btn btn-primary btn-full" onclick="resetGitHubAuth()">
+              <i class="fas fa-redo"></i> Thử lại
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

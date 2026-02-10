@@ -1,0 +1,18 @@
+{
+  "name": "copilot-api-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard for managing Copilot API tokens and API keys",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "better-sqlite3": "^11.3.0",
+    "bcryptjs": "^2.4.3",
+    "uuid": "^10.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "cookie-parser": "^1.4.6"
+  }
+}

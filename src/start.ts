@@ -10,7 +10,7 @@ import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
-import { setupCopilotToken, setupGitHubToken } from "./lib/token"
+import { setupCopilotToken } from "./lib/token"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 import { server } from "./server"
 
@@ -50,19 +50,31 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await ensurePaths()
   await cacheVSCodeVersion()
 
+  let tokenReady = false
+
   if (options.githubToken) {
     state.githubToken = options.githubToken
     consola.info("Using provided GitHub token")
+    try {
+      await setupCopilotToken()
+      await cacheModels()
+      tokenReady = true
+      consola.info(
+        `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
+      )
+    } catch (error) {
+      consola.warn("Failed to setup Copilot token. Server will start without token.")
+      consola.warn("Use the dashboard to set a valid GitHub token via /internal/update-token")
+      consola.debug("Error:", error)
+    }
   } else {
-    await setupGitHubToken()
+    consola.warn("No GitHub token provided. Server will start in token-waiting mode.")
+    consola.warn("Use the dashboard to add a GitHub token and activate it.")
   }
 
-  await setupCopilotToken()
-  await cacheModels()
-
-  consola.info(
-    `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
-  )
+  if (!tokenReady) {
+    consola.box("⏳ Server starting without valid token.\nSet a token via the dashboard to enable API access.")
+  }
 
   const serverUrl = `http://localhost:${options.port}`
 
