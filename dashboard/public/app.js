@@ -194,12 +194,15 @@ async function checkProxyStatus() {
         </div>
         <div class="providers-list">${providersHtml}</div>
       `;
-    } else if (data.status === 'online') {
-      statusEl.innerHTML = '<span class="status-dot online"></span><span>Copilot API Online</span>';
+    } else if (data.status === 'online' || data.status === 'no-token') {
+      statusEl.innerHTML = '<span class="status-dot" style="background:var(--accent-orange)"></span><span>Copilot API Online (No Token)</span>';
       detailsEl.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px">
-          <span class="badge badge-orange">Waiting</span>
-          <span style="color:var(--text-secondary)">Server đang chạy nhưng chưa có token. Hãy thêm GitHub Token và activate.</span>
+          <span class="badge badge-orange">Chờ Token</span>
+          <span style="color:var(--text-secondary)">${data.error || 'Server đang chạy nhưng chưa có token hợp lệ.'}</span>
+        </div>
+        <div style="margin-top:12px">
+          <a href="#" onclick="event.preventDefault();navigate('github-tokens')" style="color:var(--accent-blue);text-decoration:underline">→ Thêm GitHub Token</a>
         </div>
       `;
     } else {

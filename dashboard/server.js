@@ -474,18 +474,29 @@ function getEndpointCategory(endpoint) {
 
 app.get('/api/proxy-status', authMiddleware, async (req, res) => {
   try {
-    const response = await fetch(`${COPILOT_API_URL}/v1/models`, {
-      headers: {
-        'Authorization': 'Bearer dummy',
-      },
-    });
-    if (!response.ok) {
-      return res.json({ status: 'offline', models: null, error: `HTTP ${response.status}` });
+    // First check if server is alive via /health
+    const healthRes = await fetch(`${COPILOT_API_URL}/health`, { signal: AbortSignal.timeout(5000) });
+    if (!healthRes.ok) {
+      return res.json({ status: 'offline', models: null, error: 'Health check failed' });
     }
-    const data = await response.json();
-    res.json({ status: 'online', models: data });
+
+    // Server is alive, try to get models
+    try {
+      const modelsRes = await fetch(`${COPILOT_API_URL}/v1/models`, {
+        headers: { 'Authorization': 'Bearer dummy' },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (modelsRes.ok) {
+        const data = await modelsRes.json();
+        return res.json({ status: 'online', models: data });
+      }
+      // Server online but models failed (no token or token expired)
+      return res.json({ status: 'no-token', models: null, error: 'Server đang chạy nhưng chưa có GitHub Token hợp lệ. Hãy thêm token ở mục GitHub Tokens.' });
+    } catch {
+      return res.json({ status: 'no-token', models: null, error: 'Không thể lấy danh sách models. Kiểm tra GitHub Token.' });
+    }
   } catch (err) {
-    res.json({ status: 'offline', models: null, error: err.message });
+    res.json({ status: 'offline', models: null, error: 'Không thể kết nối tới Copilot API server' });
   }
 });
 
