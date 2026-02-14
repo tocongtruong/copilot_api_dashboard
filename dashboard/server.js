@@ -30,20 +30,49 @@ if (!fs.existsSync(dbDir)) {
 
 // ==================== sql.js setup ====================
 let db;
+const DB_BACKUP_PATH = DB_PATH + '.backup';
+const DB_TMP_PATH = DB_PATH + '.tmp';
+
+// Try to load a DB file safely, returns null if corrupted
+function tryLoadDb(SQL, filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const fileBuffer = fs.readFileSync(filePath);
+    if (fileBuffer.length === 0) {
+      console.warn(`[DB] File ${filePath} is empty, skipping.`);
+      return null;
+    }
+    const testDb = new SQL.Database(fileBuffer);
+    // Verify the DB is valid by running a simple query
+    testDb.exec('SELECT 1');
+    return testDb;
+  } catch (err) {
+    console.error(`[DB] Failed to load ${filePath}:`, err.message);
+    return null;
+  }
+}
 
 async function initDb() {
   const SQL = await initSqlJs();
 
-  // Load existing db file or create new
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(fileBuffer);
-  } else {
-    db = new SQL.Database();
+  // Try loading main DB file first, then backup if corrupted
+  db = tryLoadDb(SQL, DB_PATH);
+  if (!db) {
+    // Main DB is missing or corrupted, try backup
+    db = tryLoadDb(SQL, DB_BACKUP_PATH);
+    if (db) {
+      console.warn('[DB] Main database corrupted! Restored from backup.');
+      // Save backup as main immediately
+      const data = db.export();
+      fs.writeFileSync(DB_PATH, Buffer.from(data));
+    } else {
+      // No valid DB at all, create fresh
+      console.log('[DB] Creating new database...');
+      db = new SQL.Database();
+    }
   }
 
-  // Enable WAL mode & foreign keys
-  db.run('PRAGMA journal_mode = WAL');
+  // Enable foreign keys (WAL is not supported in sql.js WASM)
   db.run('PRAGMA foreign_keys = ON');
 
   // Create tables
@@ -112,14 +141,27 @@ async function initDb() {
   saveDb();
 }
 
-// Save DB to file periodically
+// Save DB to file atomically (write to tmp, then rename)
 function saveDb() {
   try {
     const data = db.export();
     const buffer = Buffer.from(data);
-    fs.writeFileSync(DB_PATH, buffer);
+    if (buffer.length === 0) {
+      console.error('[DB] Refusing to save empty database!');
+      return;
+    }
+    // Atomic write: write to .tmp, then rename over main file
+    // Keep a backup of the previous good version
+    fs.writeFileSync(DB_TMP_PATH, buffer);
+    // Backup current good DB before overwriting
+    if (fs.existsSync(DB_PATH)) {
+      fs.copyFileSync(DB_PATH, DB_BACKUP_PATH);
+    }
+    fs.renameSync(DB_TMP_PATH, DB_PATH);
   } catch (err) {
-    console.error('Failed to save DB:', err);
+    console.error('[DB] Failed to save:', err);
+    // Clean up tmp file if it exists
+    try { if (fs.existsSync(DB_TMP_PATH)) fs.unlinkSync(DB_TMP_PATH); } catch {}
   }
 }
 
@@ -743,14 +785,28 @@ async function start() {
 
 // Handle graceful shutdown - save DB
 process.on('SIGINT', () => {
-  console.log('\nSaving database...');
+  console.log('\n[Shutdown] Saving database (SIGINT)...');
   saveDb();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
+  console.log('[Shutdown] Saving database (SIGTERM)...');
   saveDb();
   process.exit(0);
+});
+
+// Catch unexpected errors - save DB before crash
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err);
+  try { saveDb(); } catch {}
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled rejection:', reason);
+  try { saveDb(); } catch {}
+  process.exit(1);
 });
 
 start().catch(err => {
