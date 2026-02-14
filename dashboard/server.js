@@ -372,6 +372,11 @@ app.post('/api/github-auth/poll', authMiddleware, async (req, res) => {
       dbRun('INSERT INTO github_tokens (id, name, token, user_id) VALUES (?, ?, ?, ?)',
         [tokenId, tokenName, data.access_token, req.user.id]);
 
+      // Deactivate others and activate this one, then push
+      dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ? AND id != ?', [req.user.id, tokenId]);
+      dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ?', [tokenId]);
+      pushTokenToCopilotApi(data.access_token);
+
       authSessions.delete(session_id);
       res.json({
         status: 'success',
@@ -411,7 +416,13 @@ app.post('/api/github-tokens', authMiddleware, (req, res) => {
   if (!name || !token) return res.status(400).json({ error: 'Name and token are required' });
 
   const id = uuidv4();
-  dbRun('INSERT INTO github_tokens (id, name, token, user_id) VALUES (?, ?, ?, ?)', [id, name, token, req.user.id]);
+  // Deactivate all other tokens, then insert new one as active
+  dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ?', [req.user.id]);
+  dbRun('INSERT INTO github_tokens (id, name, token, user_id, is_active) VALUES (?, ?, ?, ?, 1)', [id, name, token, req.user.id]);
+
+  // Push to copilot-api
+  pushTokenToCopilotApi(token);
+
   res.json({ success: true, id });
 });
 
@@ -474,6 +485,36 @@ app.delete('/api/github-tokens/:id', authMiddleware, (req, res) => {
 });
 
 // ==================== STATS ROUTES ====================
+
+// Helper: push token to copilot-api
+function pushTokenToCopilotApi(token, retries = 3) {
+  const attempt = (n) => {
+    console.log(`Pushing token to copilot-api... (attempt ${4 - n}/3)`);
+    fetch(`${COPILOT_API_URL}/internal/update-token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret',
+      },
+      body: JSON.stringify({ github_token: token }),
+      signal: AbortSignal.timeout(15000),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          console.log(`Token pushed successfully. Models cached: ${data.models_count}`);
+        } else {
+          console.warn('Push token response:', data.error || data.details);
+          if (n > 1) setTimeout(() => attempt(n - 1), 5000);
+        }
+      })
+      .catch(err => {
+        console.warn(`Push token failed: ${err.message}`);
+        if (n > 1) setTimeout(() => attempt(n - 1), 5000);
+      });
+  };
+  attempt(retries);
+}
 
 app.get('/api/stats', authMiddleware, (req, res) => {
   const totalKeys = dbGet('SELECT COUNT(*) as count FROM api_keys WHERE user_id = ?', [req.user.id]);
@@ -667,30 +708,36 @@ async function start() {
     console.log(`  │                                          │`);
     console.log(`  └──────────────────────────────────────────┘\n`);
 
-    // On startup, push active GitHub token to copilot-api
-    setTimeout(async () => {
-      try {
-        const activeToken = dbGet('SELECT token FROM github_tokens WHERE is_active = 1 LIMIT 1');
-        if (activeToken) {
-          console.log('Found active GitHub token, pushing to copilot-api...');
-          const resp = await fetch(`${COPILOT_API_URL}/internal/update-token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret' },
-            body: JSON.stringify({ github_token: activeToken.token }),
-          });
-          const data = await resp.json();
-          if (data.success) {
-            console.log(`Token pushed successfully. Models cached: ${data.models_count}`);
+    // On startup, push active GitHub token to copilot-api (with retries)
+    const pushStartupToken = (retryNum = 1, maxRetries = 6) => {
+      setTimeout(async () => {
+        try {
+          const activeToken = dbGet('SELECT token FROM github_tokens WHERE is_active = 1 LIMIT 1');
+          if (activeToken) {
+            console.log(`[Startup] Pushing active token to copilot-api (attempt ${retryNum}/${maxRetries})...`);
+            const resp = await fetch(`${COPILOT_API_URL}/internal/update-token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret' },
+              body: JSON.stringify({ github_token: activeToken.token }),
+              signal: AbortSignal.timeout(15000),
+            });
+            const data = await resp.json();
+            if (data.success) {
+              console.log(`[Startup] Token pushed successfully. Models cached: ${data.models_count}`);
+            } else {
+              console.warn('[Startup] Push failed:', data.error || data.details);
+              if (retryNum < maxRetries) pushStartupToken(retryNum + 1, maxRetries);
+            }
           } else {
-            console.warn('Failed to push token:', data.error || data.details);
+            console.log('[Startup] No active GitHub token. Use the dashboard to add one.');
           }
-        } else {
-          console.log('No active GitHub token. Use the dashboard to add one.');
+        } catch (err) {
+          console.warn(`[Startup] Could not push token (attempt ${retryNum}/${maxRetries}):`, err.message);
+          if (retryNum < maxRetries) pushStartupToken(retryNum + 1, maxRetries);
         }
-      } catch (err) {
-        console.warn('Could not push token to copilot-api:', err.message);
-      }
-    }, 5000);
+      }, retryNum === 1 ? 5000 : 10000);
+    };
+    pushStartupToken();
   });
 }
 
