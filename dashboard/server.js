@@ -128,14 +128,43 @@ async function initDb() {
     )
   `);
 
-  // Create default admin user if not exists
+  // Create default admin user with FIXED ID (prevents orphaned data on restart)
+  const ADMIN_ID = 'admin-00000000-0000-0000-0000-000000000001';
   const adminResult = db.exec("SELECT id FROM users WHERE username = 'admin'");
   if (adminResult.length === 0 || adminResult[0].values.length === 0) {
-    const adminId = uuidv4();
     const defaultPassword = process.env.ADMIN_PASSWORD || 'admin123';
     const hash = bcrypt.hashSync(defaultPassword, 10);
-    db.run('INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)', [adminId, 'admin', hash, 'admin']);
+    db.run('INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)', [ADMIN_ID, 'admin', hash, 'admin']);
     console.log(`Default admin user created. Username: admin, Password: ${defaultPassword}`);
+  } else {
+    // Ensure existing admin has the fixed ID
+    const currentAdminId = adminResult[0].values[0][0];
+    if (currentAdminId !== ADMIN_ID) {
+      console.log(`[DB] Migrating admin ID from ${currentAdminId} to fixed ID...`);
+      // Update all references to old admin ID
+      db.run('UPDATE api_keys SET user_id = ? WHERE user_id = ?', [ADMIN_ID, currentAdminId]);
+      db.run('UPDATE github_tokens SET user_id = ? WHERE user_id = ?', [ADMIN_ID, currentAdminId]);
+      db.run('UPDATE users SET id = ? WHERE id = ?', [ADMIN_ID, currentAdminId]);
+      console.log('[DB] Admin ID migration complete.');
+    }
+  }
+
+  // Reassign any orphaned data (api_keys/tokens with non-existent user_id) to admin
+  const orphanedKeys = db.exec(`
+    SELECT COUNT(*) FROM api_keys WHERE user_id NOT IN (SELECT id FROM users)
+  `);
+  if (orphanedKeys.length > 0 && orphanedKeys[0].values[0][0] > 0) {
+    const count = orphanedKeys[0].values[0][0];
+    db.run('UPDATE api_keys SET user_id = ? WHERE user_id NOT IN (SELECT id FROM users)', [ADMIN_ID]);
+    console.log(`[DB] Reassigned ${count} orphaned API key(s) to admin.`);
+  }
+  const orphanedTokens = db.exec(`
+    SELECT COUNT(*) FROM github_tokens WHERE user_id NOT IN (SELECT id FROM users)
+  `);
+  if (orphanedTokens.length > 0 && orphanedTokens[0].values[0][0] > 0) {
+    const count = orphanedTokens[0].values[0][0];
+    db.run('UPDATE github_tokens SET user_id = ? WHERE user_id NOT IN (SELECT id FROM users)', [ADMIN_ID]);
+    console.log(`[DB] Reassigned ${count} orphaned GitHub token(s) to admin.`);
   }
 
   saveDb();
