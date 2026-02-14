@@ -23,4 +23,6 @@ EXPOSE 4141
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD wget --spider -q http://localhost:4141/health || exit 1
 
-CMD ["bun", "run", "./dist/main.js", "start"]
+COPY entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
