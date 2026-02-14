@@ -23,7 +23,7 @@ services:
     networks:
       - copilot-net
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4141/"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:4141/health"]
       interval: 30s
       timeout: 5s
       start_period: 15s
@@ -46,6 +46,8 @@ services:
       - COPILOT_API_URL=http://copilot-api:4141
       - INTERNAL_SECRET=${INTERNAL_SECRET:-change-me-to-a-random-secret}
       - DB_PATH=/data/dashboard.db
+      - COPILOT_API_PORT=${COPILOT_API_PORT:-4141}
+      - PUBLIC_API_URL=${PUBLIC_API_URL:-}
     volumes:
       - dashboard-data:/data
     restart: unless-stopped
@@ -53,7 +55,7 @@ services:
       - copilot-net
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/"]
-      interval: 30s
+      interval: 15s
       timeout: 5s
       start_period: 10s
       retries: 3

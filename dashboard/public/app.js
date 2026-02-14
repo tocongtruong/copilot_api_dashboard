@@ -15,17 +15,23 @@ function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   const icons = { success: 'check-circle', error: 'exclamation-circle', info: 'info-circle' };
-  toast.innerHTML = `<i class="fas fa-${icons[type]}"></i><span>${message}</span>`;
+  toast.innerHTML = `<i class="fas fa-${icons[type] || 'info-circle'}"></i><span>${message}</span>`;
   container.appendChild(toast);
   setTimeout(() => {
-    toast.style.animation = 'slideOut 0.3s forwards';
+    toast.style.animation = 'slideOutRight 0.3s forwards';
     setTimeout(() => toast.remove(), 300);
-  }, 3000);
+  }, 3500);
 }
 
 // ==================== Modal ====================
-function showModal(id) { document.getElementById(id).classList.remove('hidden'); }
-function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+function showModal(id) {
+  document.getElementById(id).classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+function closeModal(id) {
+  document.getElementById(id).classList.add('hidden');
+  document.body.style.overflow = '';
+}
 function showCreateKeyModal() { showModal('modal-create-key'); }
 function showAddTokenModal() { showModal('modal-add-token'); }
 
@@ -34,6 +40,9 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const errorEl = document.getElementById('login-error');
   errorEl.classList.add('hidden');
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px"></div> Đang đăng nhập...';
   try {
     const data = await api('/api/auth/login', {
       method: 'POST',
@@ -49,6 +58,9 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   } catch (err) {
     errorEl.textContent = err.message;
     errorEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Đăng nhập';
   }
 });
 
@@ -82,7 +94,13 @@ document.querySelectorAll('.nav-item').forEach(item => {
     target.classList.remove('hidden');
     target.classList.add('active');
 
-    const titles = { overview: 'Tổng quan', 'api-keys': 'API Keys', 'github-tokens': 'GitHub Tokens', logs: 'Request Logs', settings: 'Cài đặt' };
+    const titles = {
+      overview: 'Tổng quan',
+      'api-keys': 'API Keys',
+      'github-tokens': 'GitHub Tokens',
+      logs: 'Request Logs',
+      settings: 'Cài đặt'
+    };
     document.getElementById('page-title').textContent = titles[page] || page;
 
     // Load page data
@@ -92,43 +110,94 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (page === 'logs') loadLogs();
 
     // Close sidebar on mobile
-    document.querySelector('.sidebar').classList.remove('open');
+    document.getElementById('sidebar').classList.remove('open');
   });
 });
 
+// Sidebar toggle
 document.getElementById('sidebar-toggle').addEventListener('click', () => {
-  document.querySelector('.sidebar').classList.toggle('open');
+  document.getElementById('sidebar').classList.toggle('open');
 });
+document.getElementById('sidebar-overlay').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('open');
+});
+
+// Navigate function (for programmatic navigation)
+function navigate(page) {
+  const item = document.querySelector(`.nav-item[data-page="${page}"]`);
+  if (item) item.click();
+}
 
 // ==================== Dashboard Load ====================
 function loadDashboard() {
   loadStats();
   checkProxyStatus();
+  loadApiGuide();
+}
+
+// ==================== API Guide ====================
+async function loadApiGuide() {
+  try {
+    const data = await api('/api/config');
+    const apiUrl = data.api_url;
+    const endpointEl = document.getElementById('api-endpoint-display');
+    const curlEl = document.getElementById('api-curl-example');
+    if (endpointEl) endpointEl.textContent = apiUrl;
+    if (curlEl) curlEl.textContent = `curl -X POST ${apiUrl}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer cpk_your_key_here" \\
+  -d '{
+    "model": "gpt-4.1",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'`;
+  } catch { /* ignore */ }
 }
 
 // ==================== Stats ====================
 async function loadStats() {
   try {
     const data = await api('/api/stats');
-    document.getElementById('stat-total-keys').textContent = data.total_keys;
-    document.getElementById('stat-active-keys').textContent = data.active_keys;
-    document.getElementById('stat-total-requests').textContent = data.total_requests.toLocaleString();
-    document.getElementById('stat-today-requests').textContent = data.today_requests;
+    animateValue('stat-total-keys', data.total_keys);
+    animateValue('stat-active-keys', data.active_keys);
+    animateValue('stat-total-requests', data.total_requests);
+    animateValue('stat-today-requests', data.today_requests);
 
     // Recent logs
     const tbody = document.querySelector('#recent-logs-table tbody');
-    tbody.innerHTML = data.recent_logs.slice(0, 10).map(log => `
-      <tr>
-        <td>${formatDate(log.created_at)}</td>
-        <td><span class="badge badge-blue">${log.key_name || 'N/A'}</span></td>
-        <td><code>${log.endpoint}</code></td>
-        <td><span class="badge badge-orange">${log.method}</span></td>
-        <td><span class="badge ${log.status_code < 400 ? 'badge-green' : 'badge-red'}">${log.status_code}</span></td>
-      </tr>
-    `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">Chưa có request nào</td></tr>';
+    if (data.recent_logs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:40px">Chưa có request nào</td></tr>';
+    } else {
+      tbody.innerHTML = data.recent_logs.slice(0, 10).map(log => `
+        <tr>
+          <td>${formatDate(log.created_at)}</td>
+          <td><span class="badge badge-blue">${escapeHtml(log.key_name || 'N/A')}</span></td>
+          <td><code style="color:var(--text-secondary);font-size:12px">${escapeHtml(log.endpoint)}</code></td>
+          <td><span class="badge badge-orange">${log.method}</span></td>
+          <td><span class="badge ${log.status_code < 400 ? 'badge-green' : 'badge-red'}">${log.status_code}</span></td>
+        </tr>
+      `).join('');
+    }
   } catch (err) {
     console.error('Failed to load stats:', err);
   }
+}
+
+// Animate number counting
+function animateValue(id, end) {
+  const el = document.getElementById(id);
+  const start = parseInt(el.textContent.replace(/,/g, '')) || 0;
+  if (start === end) { el.textContent = end.toLocaleString(); return; }
+  const duration = 600;
+  const startTime = performance.now();
+  function update(currentTime) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3); // easeOutCubic
+    const current = Math.round(start + (end - start) * eased);
+    el.textContent = current.toLocaleString();
+    if (progress < 1) requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
 }
 
 // ==================== Proxy Status ====================
@@ -138,11 +207,11 @@ async function checkProxyStatus() {
   try {
     const data = await api('/api/proxy-status');
     if (data.status === 'online' && data.models?.data?.length > 0) {
-      statusEl.innerHTML = '<span class="status-dot online"></span><span>Copilot API Online</span>';
+      statusEl.innerHTML = '<span class="status-indicator online"></span><span class="status-text">Online</span>';
       const models = data.models.data;
       const totalCount = models.length;
 
-      // Group models by provider (owned_by / vendor)
+      // Group models by provider
       const grouped = {};
       models.forEach(m => {
         const provider = m.owned_by || m.vendor || 'unknown';
@@ -150,7 +219,6 @@ async function checkProxyStatus() {
         grouped[provider].push(m);
       });
 
-      // Provider display config
       const providerMeta = {
         'azure': { icon: 'fab fa-microsoft', color: '#0078d4', label: 'Azure OpenAI' },
         'openai': { icon: 'fas fa-brain', color: '#10a37f', label: 'OpenAI' },
@@ -166,52 +234,60 @@ async function checkProxyStatus() {
 
       const providersHtml = Object.entries(grouped).map(([provider, providerModels]) => {
         const meta = providerMeta[provider.toLowerCase()] || providerMeta['unknown'];
-        const modelItems = providerModels.map(m => {
-          const displayName = m.display_name || m.id;
-          return `<div class="model-item">
-            <span class="model-id">${m.id}</span>
-            ${m.display_name && m.display_name !== m.id ? `<span class="model-name">${m.display_name}</span>` : ''}
-          </div>`;
-        }).join('');
-
-        return `<div class="provider-group">
-          <div class="provider-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <div class="provider-info">
-              <i class="${meta.icon}" style="color:${meta.color};font-size:18px"></i>
-              <span class="provider-name">${meta.label || provider}</span>
-              <span class="badge badge-blue">${providerModels.length}</span>
-            </div>
-            <i class="fas fa-chevron-down provider-toggle"></i>
+        const modelItems = providerModels.map(m => `
+          <div class="model-item">
+            <span class="model-id">${escapeHtml(m.id)}</span>
+            ${m.display_name && m.display_name !== m.id ? `<span class="model-name">${escapeHtml(m.display_name)}</span>` : ''}
           </div>
-          <div class="provider-models">${modelItems}</div>
-        </div>`;
+        `).join('');
+
+        return `
+          <div class="provider-group">
+            <div class="provider-header" onclick="this.parentElement.classList.toggle('collapsed')">
+              <div class="provider-info">
+                <i class="${meta.icon}" style="color:${meta.color};font-size:16px"></i>
+                <span class="provider-name">${meta.label || provider}</span>
+                <span class="badge badge-blue">${providerModels.length}</span>
+              </div>
+              <i class="fas fa-chevron-down provider-toggle"></i>
+            </div>
+            <div class="provider-models">${modelItems}</div>
+          </div>
+        `;
       }).join('');
 
       detailsEl.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
-          <span class="badge badge-green">Online</span>
-          <span style="color:var(--text-secondary)">${totalCount} models từ ${Object.keys(grouped).length} nhà cung cấp</span>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+          <span class="badge badge-green" style="padding:6px 14px;font-size:12px">
+            <i class="fas fa-circle" style="font-size:6px;margin-right:4px"></i> Online
+          </span>
+          <span style="color:var(--text-secondary);font-size:13px">${totalCount} models • ${Object.keys(grouped).length} providers</span>
         </div>
         <div class="providers-list">${providersHtml}</div>
       `;
     } else if (data.status === 'online' || data.status === 'no-token') {
-      statusEl.innerHTML = '<span class="status-dot" style="background:var(--accent-orange)"></span><span>Copilot API Online (No Token)</span>';
+      statusEl.innerHTML = '<span class="status-indicator warning"></span><span class="status-text">No Token</span>';
       detailsEl.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px">
-          <span class="badge badge-orange">Chờ Token</span>
-          <span style="color:var(--text-secondary)">${data.error || 'Server đang chạy nhưng chưa có token hợp lệ.'}</span>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <span class="badge badge-orange" style="padding:6px 14px;font-size:12px">Chờ Token</span>
+          <span style="color:var(--text-secondary);font-size:13px">${data.error || 'Server đang chạy nhưng chưa có token.'}</span>
         </div>
-        <div style="margin-top:12px">
-          <a href="#" onclick="event.preventDefault();navigate('github-tokens')" style="color:var(--accent-blue);text-decoration:underline">→ Thêm GitHub Token</a>
-        </div>
+        <a href="#" onclick="event.preventDefault();navigate('github-tokens')" style="color:var(--blue);font-size:13px;font-weight:500">
+          <i class="fas fa-arrow-right"></i> Thêm GitHub Token
+        </a>
       `;
     } else {
       throw new Error(data.error || 'offline');
     }
   } catch (err) {
-    statusEl.innerHTML = '<span class="status-dot offline"></span><span>Copilot API Offline</span>';
-    detailsEl.innerHTML = `<p style="color:var(--accent-red)"><i class="fas fa-exclamation-triangle"></i> Copilot API server hiện không hoạt động</p>
-      <p style="color:var(--text-secondary);font-size:13px;margin-top:4px">${err.message || ''}</p>`;
+    statusEl.innerHTML = '<span class="status-indicator offline"></span><span class="status-text">Offline</span>';
+    detailsEl.innerHTML = `
+      <div style="text-align:center;padding:20px">
+        <i class="fas fa-exclamation-triangle" style="font-size:32px;color:var(--red);margin-bottom:12px;display:block"></i>
+        <p style="color:var(--text-secondary);font-size:14px">Copilot API server không hoạt động</p>
+        <p style="color:var(--text-muted);font-size:12px;margin-top:4px">${err.message || ''}</p>
+      </div>
+    `;
   }
 }
 
@@ -220,25 +296,34 @@ async function loadApiKeys() {
   try {
     const data = await api('/api/keys');
     const tbody = document.querySelector('#api-keys-table tbody');
-    tbody.innerHTML = data.keys.map(key => `
-      <tr>
-        <td><strong>${escapeHtml(key.name)}</strong></td>
-        <td><code style="color:var(--text-secondary)">${key.key_prefix}</code></td>
-        <td>${JSON.parse(key.permissions).map(p => `<span class="badge badge-blue" style="margin:1px">${p}</span>`).join(' ')}</td>
-        <td>${key.rate_limit ? key.rate_limit + '/min' : 'Không giới hạn'}</td>
-        <td>${key.total_requests}</td>
-        <td>${key.is_active ? '<span class="badge badge-green">Hoạt động</span>' : '<span class="badge badge-red">Đã tắt</span>'}</td>
-        <td>${key.expires_at ? formatDate(key.expires_at) : 'Vĩnh viễn'}</td>
-        <td>
-          <button class="btn-icon" onclick="toggleKey('${key.id}', ${key.is_active ? 0 : 1})" title="${key.is_active ? 'Tắt' : 'Bật'}">
-            <i class="fas fa-${key.is_active ? 'pause' : 'play'}"></i>
-          </button>
-          <button class="btn-icon danger" onclick="deleteKey('${key.id}')" title="Xóa">
-            <i class="fas fa-trash"></i>
-          </button>
-        </td>
-      </tr>
-    `).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary)">Chưa có API Key nào</td></tr>';
+    if (data.keys.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:40px">Chưa có API Key nào</td></tr>';
+    } else {
+      tbody.innerHTML = data.keys.map(key => `
+        <tr>
+          <td><strong>${escapeHtml(key.name)}</strong></td>
+          <td><code style="color:var(--text-muted);font-size:12px">${escapeHtml(key.key_prefix)}</code></td>
+          <td>${JSON.parse(key.permissions).map(p => `<span class="badge badge-blue" style="margin:2px">${p}</span>`).join(' ')}</td>
+          <td>${key.rate_limit ? `<span class="badge badge-purple">${key.rate_limit}/min</span>` : '<span style="color:var(--text-muted)">∞</span>'}</td>
+          <td><strong>${key.total_requests.toLocaleString()}</strong></td>
+          <td>${key.is_active
+            ? '<span class="badge badge-green"><i class="fas fa-circle" style="font-size:6px;margin-right:4px"></i> Active</span>'
+            : '<span class="badge badge-red"><i class="fas fa-circle" style="font-size:6px;margin-right:4px"></i> Disabled</span>'
+          }</td>
+          <td>${key.expires_at ? formatDate(key.expires_at) : '<span style="color:var(--text-muted)">∞</span>'}</td>
+          <td>
+            <div style="display:flex;gap:4px">
+              <button class="btn-action" onclick="toggleKey('${key.id}', ${key.is_active ? 0 : 1})" title="${key.is_active ? 'Tắt' : 'Bật'}">
+                <i class="fas fa-${key.is_active ? 'pause' : 'play'}"></i>
+              </button>
+              <button class="btn-action danger" onclick="deleteKey('${key.id}')" title="Xóa">
+                <i class="fas fa-trash"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
   } catch (err) {
     showToast('Lỗi tải API Keys: ' + err.message, 'error');
   }
@@ -246,7 +331,7 @@ async function loadApiKeys() {
 
 document.getElementById('create-key-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const permissions = Array.from(document.querySelectorAll('#create-key-form .checkbox input:checked')).map(cb => cb.value);
+  const permissions = Array.from(document.querySelectorAll('#create-key-form .checkbox-card input:checked')).map(cb => cb.value);
   const customKey = document.getElementById('key-custom').value.trim();
   try {
     const data = await api('/api/keys', {
@@ -266,9 +351,9 @@ document.getElementById('create-key-form').addEventListener('submit', async (e) 
     document.getElementById('key-custom').value = '';
     loadApiKeys();
     loadStats();
-    showToast('API Key đã được tạo thành công!', 'success');
+    showToast('API Key đã được tạo!', 'success');
   } catch (err) {
-    showToast('Lỗi tạo API Key: ' + err.message, 'error');
+    showToast('Lỗi: ' + err.message, 'error');
   }
 });
 
@@ -290,7 +375,7 @@ async function deleteKey(id) {
     loadStats();
     showToast('Đã xóa API Key', 'success');
   } catch (err) {
-    showToast('Lỗi xóa: ' + err.message, 'error');
+    showToast('Lỗi: ' + err.message, 'error');
   }
 }
 
@@ -308,29 +393,35 @@ async function loadGithubTokens() {
   try {
     const data = await api('/api/github-tokens');
     const tbody = document.querySelector('#github-tokens-table tbody');
-    tbody.innerHTML = data.tokens.map(token => `
-      <tr>
-        <td><strong>${escapeHtml(token.name)}</strong></td>
-        <td><code style="color:var(--text-secondary)">${token.token_preview}</code></td>
-        <td>
-          <label class="toggle-switch">
-            <input type="checkbox" ${token.is_active ? 'checked' : ''} onchange="toggleGithubToken('${token.id}', this.checked)">
-            <span class="toggle-slider"></span>
-          </label>
-          <span style="margin-left:8px;font-size:12px;color:${token.is_active ? 'var(--accent-green)' : 'var(--text-muted)'}">
-            ${token.is_active ? 'Đang dùng' : 'Tắt'}
-          </span>
-        </td>
-        <td>${formatDate(token.created_at)}</td>
-        <td>
-          <button class="btn-icon danger" onclick="deleteGithubToken('${token.id}')" title="Xóa">
-            <i class="fas fa-trash"></i>
-          </button>
-        </td>
-      </tr>
-    `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">Chưa có GitHub Token nào</td></tr>';
+    if (data.tokens.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:40px">Chưa có GitHub Token nào</td></tr>';
+    } else {
+      tbody.innerHTML = data.tokens.map(token => `
+        <tr>
+          <td><strong>${escapeHtml(token.name)}</strong></td>
+          <td><code style="color:var(--text-muted);font-size:12px">${escapeHtml(token.token_preview)}</code></td>
+          <td>
+            <div style="display:flex;align-items:center;gap:10px">
+              <label class="toggle-switch">
+                <input type="checkbox" ${token.is_active ? 'checked' : ''} onchange="toggleGithubToken('${token.id}', this.checked)">
+                <span class="toggle-slider"></span>
+              </label>
+              <span style="font-size:12px;color:${token.is_active ? 'var(--green)' : 'var(--text-muted)'}">
+                ${token.is_active ? 'Đang dùng' : 'Tắt'}
+              </span>
+            </div>
+          </td>
+          <td style="color:var(--text-secondary);font-size:12px">${formatDate(token.created_at)}</td>
+          <td>
+            <button class="btn-action danger" onclick="deleteGithubToken('${token.id}')" title="Xóa">
+              <i class="fas fa-trash"></i>
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    }
   } catch (err) {
-    showToast('Lỗi tải GitHub Tokens: ' + err.message, 'error');
+    showToast('Lỗi: ' + err.message, 'error');
   }
 }
 
@@ -366,17 +457,7 @@ async function toggleGithubToken(id, isActive) {
     loadGithubTokens();
   } catch (err) {
     showToast('Lỗi: ' + err.message, 'error');
-    loadGithubTokens(); // reload to reset toggle state
-  }
-}
-
-async function activateToken(id) {
-  try {
-    await api(`/api/github-tokens/${id}/activate`, { method: 'PUT' });
     loadGithubTokens();
-    showToast('Đã kích hoạt token!', 'success');
-  } catch (err) {
-    showToast('Lỗi: ' + err.message, 'error');
   }
 }
 
@@ -391,7 +472,7 @@ async function deleteGithubToken(id) {
   }
 }
 
-// ==================== GitHub OAuth Auth Flow ====================
+// ==================== GitHub OAuth Flow ====================
 function startGitHubAuth() {
   resetAuthUI();
   document.getElementById('auth-token-name').value = '';
@@ -407,22 +488,17 @@ function resetAuthUI() {
 
 async function initiateGitHubAuth() {
   const name = document.getElementById('auth-token-name').value.trim() || 'GitHub Token ' + new Date().toLocaleString('vi-VN');
-
   try {
     const data = await api('/api/github-auth/start', { method: 'POST' });
-
     currentAuthSessionId = data.session_id;
 
-    // Show code step
     document.getElementById('auth-step-name').classList.add('hidden');
     document.getElementById('auth-step-code').classList.remove('hidden');
 
-    // Set code and URL
     document.getElementById('auth-user-code').textContent = data.user_code;
     document.getElementById('auth-url-text').textContent = data.verification_uri;
     document.getElementById('auth-verification-url').href = data.verification_uri;
 
-    // Start countdown timer
     let timeLeft = data.expires_in;
     updateTimer(timeLeft);
     authTimerInterval = setInterval(() => {
@@ -434,32 +510,26 @@ async function initiateGitHubAuth() {
       }
     }, 1000);
 
-    // Start polling for token
-    const pollInterval = (data.interval + 1) * 1000; // interval + 1 second safety margin
+    const pollInterval = (data.interval + 1) * 1000;
     authPollInterval = setInterval(() => pollGitHubAuth(name), pollInterval);
-
   } catch (err) {
-    showToast('Lỗi bắt đầu xác thực: ' + err.message, 'error');
+    showToast('Lỗi: ' + err.message, 'error');
   }
 }
 
 async function pollGitHubAuth(tokenName) {
   if (!currentAuthSessionId) return;
-
   try {
     const data = await api('/api/github-auth/poll', {
       method: 'POST',
       body: JSON.stringify({ session_id: currentAuthSessionId, name: tokenName }),
     });
-
     document.getElementById('auth-status-text').textContent = data.message || 'Đang chờ...';
-
     if (data.status === 'success') {
       clearAuthIntervals();
-      // Show success
       document.getElementById('auth-step-code').classList.add('hidden');
       document.getElementById('auth-step-success').classList.remove('hidden');
-      document.getElementById('auth-success-msg').textContent = `Token "${tokenName}" đã được tạo thành công!`;
+      document.getElementById('auth-success-msg').textContent = `Token "${tokenName}" đã được tạo!`;
       document.getElementById('step2-circle').classList.add('completed');
     } else if (data.status === 'expired' || data.status === 'denied') {
       clearAuthIntervals();
@@ -523,38 +593,40 @@ async function loadLogs() {
       api(`/api/stats/chart?days=${days}`),
     ]);
 
-    // Simple bar chart using HTML/CSS
     const container = document.getElementById('logs-container');
     const logs = statsData.recent_logs;
 
-    container.innerHTML = `
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Thời gian</th>
-            <th>API Key</th>
-            <th>Endpoint</th>
-            <th>Method</th>
-            <th>Status</th>
-            <th>IP</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${logs.map(log => `
+    if (logs.length === 0) {
+      container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">Chưa có log nào</div>';
+    } else {
+      container.innerHTML = `
+        <table class="table">
+          <thead>
             <tr>
-              <td>${formatDate(log.created_at)}</td>
-              <td><span class="badge badge-blue">${log.key_name || 'N/A'}</span></td>
-              <td><code>${log.endpoint}</code></td>
-              <td><span class="badge badge-orange">${log.method}</span></td>
-              <td><span class="badge ${log.status_code < 400 ? 'badge-green' : 'badge-red'}">${log.status_code}</span></td>
-              <td>${log.ip_address || '-'}</td>
+              <th>Thời gian</th>
+              <th>API Key</th>
+              <th>Endpoint</th>
+              <th>Method</th>
+              <th>Status</th>
+              <th>IP</th>
             </tr>
-          `).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">Chưa có log</td></tr>'}
-        </tbody>
-      </table>
-    `;
+          </thead>
+          <tbody>
+            ${logs.map(log => `
+              <tr>
+                <td style="font-size:12px;color:var(--text-secondary)">${formatDate(log.created_at)}</td>
+                <td><span class="badge badge-blue">${escapeHtml(log.key_name || 'N/A')}</span></td>
+                <td><code style="color:var(--text-secondary);font-size:12px">${escapeHtml(log.endpoint)}</code></td>
+                <td><span class="badge badge-orange">${log.method}</span></td>
+                <td><span class="badge ${log.status_code < 400 ? 'badge-green' : 'badge-red'}">${log.status_code}</span></td>
+                <td style="color:var(--text-muted);font-size:12px">${log.ip_address || '-'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
 
-    // Simple chart
     renderChart(chartData.data);
   } catch (err) {
     console.error('Failed to load logs:', err);
@@ -566,14 +638,13 @@ function renderChart(data) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const rect = canvas.parentElement.getBoundingClientRect();
-  canvas.width = rect.width - 24;
+  canvas.width = rect.width - 32;
   canvas.height = 200;
-
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (!data || data.length === 0) {
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '14px Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Chưa có dữ liệu', canvas.width / 2, canvas.height / 2);
     return;
@@ -583,10 +654,10 @@ function renderChart(data) {
   const padding = { top: 20, right: 20, bottom: 40, left: 50 };
   const chartW = canvas.width - padding.left - padding.right;
   const chartH = canvas.height - padding.top - padding.bottom;
-  const barW = Math.min(40, (chartW / data.length) - 8);
+  const barW = Math.min(36, (chartW / data.length) - 8);
 
   // Grid lines
-  ctx.strokeStyle = '#334155';
+  ctx.strokeStyle = 'rgba(55, 65, 81, 0.4)';
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = padding.top + (chartH / 4) * i;
@@ -595,13 +666,13 @@ function renderChart(data) {
     ctx.lineTo(canvas.width - padding.right, y);
     ctx.stroke();
 
-    ctx.fillStyle = '#64748b';
-    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '11px Inter, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(Math.round(maxVal - (maxVal / 4) * i), padding.left - 8, y + 4);
+    ctx.fillText(Math.round(maxVal - (maxVal / 4) * i), padding.left - 10, y + 4);
   }
 
-  // Bars
+  // Bars with rounded top corners
   data.forEach((d, i) => {
     const x = padding.left + (chartW / data.length) * i + (chartW / data.length - barW) / 2;
     const barH = (d.requests / maxVal) * chartH;
@@ -611,20 +682,38 @@ function renderChart(data) {
     gradient.addColorStop(0, '#3b82f6');
     gradient.addColorStop(1, '#1d4ed8');
     ctx.fillStyle = gradient;
+
+    // Rounded top
+    const r = Math.min(4, barW / 2, barH / 2);
     ctx.beginPath();
-    ctx.roundRect(x, y, barW, barH, [4, 4, 0, 0]);
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + barW - r, y);
+    ctx.quadraticCurveTo(x + barW, y, x + barW, y + r);
+    ctx.lineTo(x + barW, y + barH);
+    ctx.lineTo(x, y + barH);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
     ctx.fill();
 
-    // Label
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '10px sans-serif';
+    // Glow effect
+    ctx.shadowColor = 'rgba(59, 130, 246, 0.3)';
+    ctx.shadowBlur = 8;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Date label
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '10px Inter, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(d.date.substring(5), x + barW / 2, canvas.height - padding.bottom + 16);
 
-    // Value
-    ctx.fillStyle = '#f1f5f9';
-    ctx.font = '11px sans-serif';
-    ctx.fillText(d.requests, x + barW / 2, y - 6);
+    // Value above bar
+    if (barH > 20) {
+      ctx.fillStyle = '#f9fafb';
+      ctx.font = '11px Inter, sans-serif';
+      ctx.fillText(d.requests, x + barW / 2, y - 6);
+    }
   });
 }
 
@@ -660,6 +749,7 @@ function formatDate(dateStr) {
 }
 
 function escapeHtml(str) {
+  if (!str) return '';
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;

@@ -27,7 +27,16 @@ server.get("/health", (c) => c.json({ status: "ok" }))
 // Internal endpoint for dashboard to update GitHub token
 server.post("/internal/update-token", async (c) => {
   try {
-    const body = await c.req.json() as { github_token?: string }
+    const body = await c.req.json() as { github_token?: string; action?: string }
+
+    // Clear token action
+    if (body.action === "clear") {
+      state.githubToken = undefined
+      state.copilotToken = undefined
+      state.models = undefined
+      return c.json({ success: true, message: "Token cleared" })
+    }
+
     if (body.github_token) {
       state.githubToken = body.github_token
       await setupCopilotToken()

@@ -9,6 +9,14 @@ export const modelRoutes = new Hono()
 modelRoutes.get("/", async (c) => {
   try {
     if (!state.models) {
+      if (!state.copilotToken) {
+        return c.json({
+          object: "list",
+          data: [],
+          has_more: false,
+          error: "No Copilot token configured. Add a GitHub token via the dashboard.",
+        })
+      }
       // This should be handled by startup logic, but as a fallback.
       await cacheModels()
     }

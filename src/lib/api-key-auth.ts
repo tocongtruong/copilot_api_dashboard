@@ -2,9 +2,28 @@ import { createMiddleware } from "hono/factory"
 import type { Context, Next } from "hono"
 import consola from "consola"
 
-const DASHBOARD_URL = process.env.DASHBOARD_URL || "http://dashboard:3000"
+const DASHBOARD_URL = process.env.DASHBOARD_URL || "http://localhost:3000"
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "internal-secret"
 const ENABLE_AUTH = process.env.ENABLE_API_AUTH !== "false"
+
+// Fire-and-forget request logging to dashboard
+function logRequest(apiKey: string, endpoint: string, method: string, statusCode: number, ip: string, responseTimeMs: number) {
+  fetch(`${DASHBOARD_URL}/api/log-request`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Internal-Secret": INTERNAL_SECRET,
+    },
+    body: JSON.stringify({
+      api_key: apiKey,
+      endpoint,
+      method,
+      status_code: statusCode,
+      ip,
+      response_time_ms: responseTimeMs,
+    }),
+  }).catch(() => { /* ignore logging failures */ })
+}
 
 // Cache for validated keys to reduce dashboard calls
 const keyValidationCache = new Map<
@@ -45,9 +64,15 @@ export const apiKeyAuth = createMiddleware(async (c: Context, next: Next) => {
   }
 
   const apiKey = authHeader.replace("Bearer ", "").trim()
+  const startTime = Date.now()
+  const clientIp = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || ""
+
   if (!apiKey || apiKey === "dummy") {
     // Allow "dummy" token for backward compatibility
-    return next()
+    await next()
+    const elapsed = Date.now() - startTime
+    logRequest("dummy", path, c.req.method, c.res.status, clientIp, elapsed)
+    return
   }
 
   // Check cache first
@@ -56,7 +81,10 @@ export const apiKeyAuth = createMiddleware(async (c: Context, next: Next) => {
     if (!cached.valid) {
       return c.json({ error: "Invalid API key" }, 401)
     }
-    return next()
+    await next()
+    const elapsed = Date.now() - startTime
+    logRequest(apiKey, path, c.req.method, c.res.status, clientIp, elapsed)
+    return
   }
 
   // Validate with dashboard
@@ -92,7 +120,10 @@ export const apiKeyAuth = createMiddleware(async (c: Context, next: Next) => {
       return c.json({ error: result.error || "Invalid API key" }, 401)
     }
 
-    return next()
+    await next()
+    const elapsed = Date.now() - startTime
+    logRequest(apiKey, path, c.req.method, c.res.status, clientIp, elapsed)
+    return
   } catch (error) {
     consola.warn(
       "Failed to validate API key with dashboard, allowing request:",

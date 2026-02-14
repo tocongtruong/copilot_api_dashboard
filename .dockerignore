@@ -1,7 +1,8 @@
 node_modules
+dashboard/node_modules
+dashboard/data
 
 .vscode/
-
 .git/
 .github/
 .gitignore
@@ -11,3 +12,5 @@ tests/
 *.md
 
 .eslintcache
+.env
+.env.*

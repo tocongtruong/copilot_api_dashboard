@@ -8,11 +8,12 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "better-sqlite3": "^11.3.0",
     "bcryptjs": "^2.4.3",
-    "uuid": "^10.0.0",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^17.3.1",
+    "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
-    "cookie-parser": "^1.4.6"
+    "sql.js": "^1.11.0",
+    "uuid": "^10.0.0"
   }
 }
