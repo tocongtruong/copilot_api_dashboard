@@ -130,6 +130,10 @@ async function initDb() {
 
   // Create default admin user with FIXED ID (prevents orphaned data on restart)
   const ADMIN_ID = 'admin-00000000-0000-0000-0000-000000000001';
+
+  // Disable FK temporarily for migration safety
+  db.run('PRAGMA foreign_keys = OFF');
+
   const adminResult = db.exec("SELECT id FROM users WHERE username = 'admin'");
   if (adminResult.length === 0 || adminResult[0].values.length === 0) {
     const defaultPassword = process.env.ADMIN_PASSWORD || 'admin123';
@@ -141,10 +145,11 @@ async function initDb() {
     const currentAdminId = adminResult[0].values[0][0];
     if (currentAdminId !== ADMIN_ID) {
       console.log(`[DB] Migrating admin ID from ${currentAdminId} to fixed ID...`);
-      // Update all references to old admin ID
+      // 1. Update users table FIRST
+      db.run('UPDATE users SET id = ? WHERE id = ?', [ADMIN_ID, currentAdminId]);
+      // 2. Then update child references
       db.run('UPDATE api_keys SET user_id = ? WHERE user_id = ?', [ADMIN_ID, currentAdminId]);
       db.run('UPDATE github_tokens SET user_id = ? WHERE user_id = ?', [ADMIN_ID, currentAdminId]);
-      db.run('UPDATE users SET id = ? WHERE id = ?', [ADMIN_ID, currentAdminId]);
       console.log('[DB] Admin ID migration complete.');
     }
   }
@@ -166,6 +171,9 @@ async function initDb() {
     db.run('UPDATE github_tokens SET user_id = ? WHERE user_id NOT IN (SELECT id FROM users)', [ADMIN_ID]);
     console.log(`[DB] Reassigned ${count} orphaned GitHub token(s) to admin.`);
   }
+
+  // Re-enable FK after migration
+  db.run('PRAGMA foreign_keys = ON');
 
   saveDb();
 }
