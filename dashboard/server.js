@@ -264,7 +264,12 @@ function authMiddleware(req, res, next) {
   }
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
+    // Always resolve the real user from DB (handles ID migration)
+    const dbUser = dbGet('SELECT id, username, role FROM users WHERE username = ?', [decoded.username]);
+    if (!dbUser) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+    req.user = { id: dbUser.id, username: dbUser.username, role: dbUser.role };
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
