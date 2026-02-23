@@ -15,23 +15,34 @@ const readGithubToken = () => fs.readFile(PATHS.GITHUB_TOKEN_PATH, "utf8")
 const writeGithubToken = (token: string) =>
   fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token)
 
+// Track the refresh interval so we can clear it when switching tokens
+let copilotTokenRefreshInterval: ReturnType<typeof setInterval> | null = null
+
 export const setupCopilotToken = async () => {
+  // Clear any existing refresh interval to prevent old token from overwriting
+  if (copilotTokenRefreshInterval) {
+    clearInterval(copilotTokenRefreshInterval)
+    copilotTokenRefreshInterval = null
+    consola.debug("Cleared previous Copilot token refresh interval")
+  }
+
   const { token, refresh_in } = await getCopilotToken()
   state.copilotToken = token
 
   // Display the Copilot token to the screen
   consola.debug("GitHub Copilot Token fetched successfully!")
+  consola.info(`Active GitHub Token: ${state.activeGithubTokenName || "unknown"}`)
   if (state.showToken) {
     consola.info("Copilot token:", token)
   }
 
   const refreshInterval = (refresh_in - 60) * 1000
-  setInterval(async () => {
-    consola.debug("Refreshing Copilot token")
+  copilotTokenRefreshInterval = setInterval(async () => {
+    consola.debug(`Refreshing Copilot token (source: ${state.activeGithubTokenName || "unknown"})`)
     try {
       const { token } = await getCopilotToken()
       state.copilotToken = token
-      consola.debug("Copilot token refreshed")
+      consola.debug(`Copilot token refreshed (source: ${state.activeGithubTokenName || "unknown"})`)
       if (state.showToken) {
         consola.info("Refreshed Copilot token:", token)
       }

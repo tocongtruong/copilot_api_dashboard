@@ -171,6 +171,7 @@ async function loadStats() {
         <tr>
           <td>${formatDate(log.created_at)}</td>
           <td><span class="badge badge-blue">${escapeHtml(log.key_name || 'N/A')}</span></td>
+          <td>${log.github_token_name ? `<span class="badge badge-purple">${escapeHtml(log.github_token_name)}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
           <td><code style="color:var(--text-secondary);font-size:12px">${escapeHtml(log.endpoint)}</code></td>
           <td><span class="badge badge-orange">${log.method}</span></td>
           <td><span class="badge ${log.status_code < 400 ? 'badge-green' : 'badge-red'}">${log.status_code}</span></td>
@@ -307,9 +308,9 @@ async function loadApiKeys() {
           <td>${key.rate_limit ? `<span class="badge badge-purple">${key.rate_limit}/min</span>` : '<span style="color:var(--text-muted)">∞</span>'}</td>
           <td><strong>${key.total_requests.toLocaleString()}</strong></td>
           <td>${key.is_active
-            ? '<span class="badge badge-green"><i class="fas fa-circle" style="font-size:6px;margin-right:4px"></i> Active</span>'
-            : '<span class="badge badge-red"><i class="fas fa-circle" style="font-size:6px;margin-right:4px"></i> Disabled</span>'
-          }</td>
+          ? '<span class="badge badge-green"><i class="fas fa-circle" style="font-size:6px;margin-right:4px"></i> Active</span>'
+          : '<span class="badge badge-red"><i class="fas fa-circle" style="font-size:6px;margin-right:4px"></i> Disabled</span>'
+        }</td>
           <td>${key.expires_at ? formatDate(key.expires_at) : '<span style="color:var(--text-muted)">∞</span>'}</td>
           <td>
             <div style="display:flex;gap:4px">
@@ -605,6 +606,7 @@ async function loadLogs() {
             <tr>
               <th>Thời gian</th>
               <th>API Key</th>
+              <th>GitHub Token</th>
               <th>Endpoint</th>
               <th>Method</th>
               <th>Status</th>
@@ -616,6 +618,7 @@ async function loadLogs() {
               <tr>
                 <td style="font-size:12px;color:var(--text-secondary)">${formatDate(log.created_at)}</td>
                 <td><span class="badge badge-blue">${escapeHtml(log.key_name || 'N/A')}</span></td>
+                <td>${log.github_token_name ? `<span class="badge badge-purple">${escapeHtml(log.github_token_name)}</span>` : '<span style="color:var(--text-muted)">-</span>'}</td>
                 <td><code style="color:var(--text-secondary);font-size:12px">${escapeHtml(log.endpoint)}</code></td>
                 <td><span class="badge badge-orange">${log.method}</span></td>
                 <td><span class="badge ${log.status_code < 400 ? 'badge-green' : 'badge-red'}">${log.status_code}</span></td>

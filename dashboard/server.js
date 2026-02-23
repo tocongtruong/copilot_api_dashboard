@@ -112,6 +112,7 @@ async function initDb() {
       response_time_ms INTEGER,
       ip_address TEXT,
       user_agent TEXT,
+      github_token_name TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL
     )
@@ -127,6 +128,15 @@ async function initDb() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+
+  // Migration: add github_token_name column if not exists
+  try {
+    db.exec('SELECT github_token_name FROM request_logs LIMIT 1');
+  } catch {
+    console.log('[DB] Migrating: adding github_token_name column to request_logs...');
+    db.run('ALTER TABLE request_logs ADD COLUMN github_token_name TEXT');
+    console.log('[DB] Migration complete: github_token_name column added.');
+  }
 
   // Create default admin user with FIXED ID (prevents orphaned data on restart)
   const ADMIN_ID = 'admin-00000000-0000-0000-0000-000000000001';
@@ -198,7 +208,7 @@ function saveDb() {
   } catch (err) {
     console.error('[DB] Failed to save:', err);
     // Clean up tmp file if it exists
-    try { if (fs.existsSync(DB_TMP_PATH)) fs.unlinkSync(DB_TMP_PATH); } catch {}
+    try { if (fs.existsSync(DB_TMP_PATH)) fs.unlinkSync(DB_TMP_PATH); } catch { }
   }
 }
 
@@ -459,7 +469,7 @@ app.post('/api/github-auth/poll', authMiddleware, async (req, res) => {
       // Deactivate others and activate this one, then push
       dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ? AND id != ?', [req.user.id, tokenId]);
       dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ?', [tokenId]);
-      pushTokenToCopilotApi(data.access_token);
+      pushTokenToCopilotApi(data.access_token, tokenName);
 
       authSessions.delete(session_id);
       res.json({
@@ -504,8 +514,8 @@ app.post('/api/github-tokens', authMiddleware, (req, res) => {
   dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ?', [req.user.id]);
   dbRun('INSERT INTO github_tokens (id, name, token, user_id, is_active) VALUES (?, ?, ?, ?, 1)', [id, name, token, req.user.id]);
 
-  // Push to copilot-api
-  pushTokenToCopilotApi(token);
+  // Push to copilot-api with token name
+  pushTokenToCopilotApi(token, name);
 
   res.json({ success: true, id });
 });
@@ -514,13 +524,9 @@ app.put('/api/github-tokens/:id/activate', authMiddleware, (req, res) => {
   dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ?', [req.user.id]);
   dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
 
-  const ghToken = dbGet('SELECT token FROM github_tokens WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+  const ghToken = dbGet('SELECT token, name FROM github_tokens WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
   if (ghToken) {
-    fetch(`${COPILOT_API_URL}/internal/update-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret' },
-      body: JSON.stringify({ github_token: ghToken.token }),
-    }).catch(err => console.error('Failed to update copilot-api token:', err));
+    pushTokenToCopilotApi(ghToken.token, ghToken.name);
   }
   res.json({ success: true });
 });
@@ -531,11 +537,7 @@ app.put('/api/github-tokens/:id/deactivate', authMiddleware, (req, res) => {
   // Check if any token is still active; if not, clear copilot-api token
   const anyActive = dbGet('SELECT id FROM github_tokens WHERE user_id = ? AND is_active = 1', [req.user.id]);
   if (!anyActive) {
-    fetch(`${COPILOT_API_URL}/internal/update-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret' },
-      body: JSON.stringify({ action: 'clear' }),
-    }).catch(err => console.error('Failed to clear copilot-api token:', err));
+    pushTokenToCopilotApi(null, null); // This will call clear on the other end if implemented or we can just call fetch for clear
   }
   res.json({ success: true });
 });
@@ -548,21 +550,13 @@ app.delete('/api/github-tokens/:id', authMiddleware, (req, res) => {
 
   // If deleted token was active, clear copilot-api token
   if (tokenToDelete && tokenToDelete.is_active) {
-    const nextActive = dbGet('SELECT id, token FROM github_tokens WHERE user_id = ? AND is_active = 1', [req.user.id]);
+    const nextActive = dbGet('SELECT id, token, name FROM github_tokens WHERE user_id = ? AND is_active = 1', [req.user.id]);
     if (nextActive) {
       // Push next active token
-      fetch(`${COPILOT_API_URL}/internal/update-token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret' },
-        body: JSON.stringify({ github_token: nextActive.token }),
-      }).catch(err => console.error('Failed to update copilot-api token:', err));
+      pushTokenToCopilotApi(nextActive.token, nextActive.name);
     } else {
       // No more active tokens, clear
-      fetch(`${COPILOT_API_URL}/internal/update-token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret' },
-        body: JSON.stringify({ action: 'clear' }),
-      }).catch(err => console.error('Failed to clear copilot-api token:', err));
+      pushTokenToCopilotApi(null, null);
     }
   }
   res.json({ success: true });
@@ -571,29 +565,34 @@ app.delete('/api/github-tokens/:id', authMiddleware, (req, res) => {
 // ==================== STATS ROUTES ====================
 
 // Helper: push token to copilot-api
-function pushTokenToCopilotApi(token, retries = 3) {
+function pushTokenToCopilotApi(token, tokenName, retries = 3) {
   const attempt = (n) => {
-    console.log(`Pushing token to copilot-api... (attempt ${4 - n}/3)`);
+    // Determine action: clear if no token provided
+    const isClear = !token;
+    console.log(`[Token Push] ${isClear ? 'Clearing token' : `Pushing "${tokenName || 'unknown'}"`} to copilot-api... (attempt ${4 - n}/3)`);
+
+    const body = isClear ? { action: 'clear' } : { github_token: token, token_name: tokenName || 'unknown' };
+
     fetch(`${COPILOT_API_URL}/internal/update-token`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret',
       },
-      body: JSON.stringify({ github_token: token }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
     })
       .then(r => r.json())
       .then(data => {
         if (data.success) {
-          console.log(`Token pushed successfully. Models cached: ${data.models_count}`);
+          console.log(`[Token Push] ${isClear ? 'Token cleared' : `"${tokenName}" pushed`} successfully.`);
         } else {
-          console.warn('Push token response:', data.error || data.details);
+          console.warn('[Token Push] Response:', data.error || data.details);
           if (n > 1) setTimeout(() => attempt(n - 1), 5000);
         }
       })
       .catch(err => {
-        console.warn(`Push token failed: ${err.message}`);
+        console.warn(`[Token Push] Failed: ${err.message}`);
         if (n > 1) setTimeout(() => attempt(n - 1), 5000);
       });
   };
@@ -611,7 +610,7 @@ app.get('/api/stats', authMiddleware, (req, res) => {
     AND date(created_at) = ?
   `, [req.user.id, todayVN]);
   const recentLogs = dbAll(`
-    SELECT rl.*, ak.name as key_name FROM request_logs rl
+    SELECT rl.*, ak.name as key_name, rl.github_token_name FROM request_logs rl
     LEFT JOIN api_keys ak ON rl.api_key_id = ak.id
     WHERE ak.user_id = ?
     ORDER BY rl.created_at DESC LIMIT 50
@@ -696,7 +695,7 @@ app.post('/api/log-request', (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const { api_key, endpoint, method, status_code, ip, response_time_ms } = req.body;
+  const { api_key, endpoint, method, status_code, ip, response_time_ms, github_token_name } = req.body;
   if (!endpoint) return res.status(400).json({ error: 'endpoint required' });
 
   let keyId = null;
@@ -713,8 +712,8 @@ app.post('/api/log-request', (req, res) => {
     }
   }
 
-  dbRun(`INSERT INTO request_logs (api_key_id, endpoint, method, status_code, response_time_ms, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [keyId, endpoint, method || 'GET', status_code || 200, response_time_ms || 0, ip || '', vnNow()]);
+  dbRun(`INSERT INTO request_logs (api_key_id, endpoint, method, status_code, response_time_ms, ip_address, github_token_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [keyId, endpoint, method || 'GET', status_code || 200, response_time_ms || 0, ip || '', github_token_name || null, vnNow()]);
 
   if (keyId) {
     dbRun('UPDATE api_keys SET last_used_at = ?, total_requests = total_requests + 1 WHERE id = ?', [vnNow(), keyId]);
@@ -793,35 +792,15 @@ async function start() {
     console.log(`  └──────────────────────────────────────────┘\n`);
 
     // On startup, push active GitHub token to copilot-api (with retries)
-    const pushStartupToken = (retryNum = 1, maxRetries = 6) => {
-      setTimeout(async () => {
-        try {
-          const activeToken = dbGet('SELECT token FROM github_tokens WHERE is_active = 1 LIMIT 1');
-          if (activeToken) {
-            console.log(`[Startup] Pushing active token to copilot-api (attempt ${retryNum}/${maxRetries})...`);
-            const resp = await fetch(`${COPILOT_API_URL}/internal/update-token`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret' },
-              body: JSON.stringify({ github_token: activeToken.token }),
-              signal: AbortSignal.timeout(15000),
-            });
-            const data = await resp.json();
-            if (data.success) {
-              console.log(`[Startup] Token pushed successfully. Models cached: ${data.models_count}`);
-            } else {
-              console.warn('[Startup] Push failed:', data.error || data.details);
-              if (retryNum < maxRetries) pushStartupToken(retryNum + 1, maxRetries);
-            }
-          } else {
-            console.log('[Startup] No active GitHub token. Use the dashboard to add one.');
-          }
-        } catch (err) {
-          console.warn(`[Startup] Could not push token (attempt ${retryNum}/${maxRetries}):`, err.message);
-          if (retryNum < maxRetries) pushStartupToken(retryNum + 1, maxRetries);
-        }
-      }, retryNum === 1 ? 5000 : 10000);
-    };
-    pushStartupToken();
+    const activeToken = dbGet('SELECT token, name FROM github_tokens WHERE is_active = 1 LIMIT 1');
+    if (activeToken) {
+      // Delay initial push to ensure copilot-api is up (especially in docker-compose)
+      setTimeout(() => {
+        pushTokenToCopilotApi(activeToken.token, activeToken.name, 6); // More retries on startup
+      }, 5000);
+    } else {
+      console.log('[Startup] No active GitHub token. Use the dashboard to add one.');
+    }
   });
 }
 
@@ -841,13 +820,13 @@ process.on('SIGTERM', () => {
 // Catch unexpected errors - save DB before crash
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] Uncaught exception:', err);
-  try { saveDb(); } catch {}
+  try { saveDb(); } catch { }
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
   console.error('[FATAL] Unhandled rejection:', reason);
-  try { saveDb(); } catch {}
+  try { saveDb(); } catch { }
   process.exit(1);
 });
 

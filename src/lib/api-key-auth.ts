@@ -2,6 +2,8 @@ import { createMiddleware } from "hono/factory"
 import type { Context, Next } from "hono"
 import consola from "consola"
 
+import { state } from "./state"
+
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "http://localhost:3000"
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "internal-secret"
 const ENABLE_AUTH = process.env.ENABLE_API_AUTH !== "false"
@@ -21,6 +23,7 @@ function logRequest(apiKey: string, endpoint: string, method: string, statusCode
       status_code: statusCode,
       ip,
       response_time_ms: responseTimeMs,
+      github_token_name: state.activeGithubTokenName || null,
     }),
   }).catch(() => { /* ignore logging failures */ })
 }
