@@ -250,6 +250,7 @@
                     <tr>
                       <th>Tên</th>
                       <th>Token</th>
+                      <th>Quota</th>
                       <th>Trạng thái</th>
                       <th>Ngày tạo</th>
                       <th>Hành động</th>
@@ -257,6 +258,34 @@
                   </thead>
                   <tbody></tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quota-Aware Rotation Settings -->
+          <div class="card animate-card" style="margin-top:20px">
+            <div class="card-header">
+              <div class="card-title"><i class="fas fa-sync-alt"></i> Quota-Aware Rotation</div>
+              <div class="header-actions">
+                <button class="btn btn-sm btn-glass" id="btn-check-quotas" onclick="checkAllQuotas()">
+                  <i class="fas fa-chart-pie"></i> Check Quotas
+                </button>
+                <label class="toggle-switch" style="margin-left:12px">
+                  <input type="checkbox" id="rotation-toggle" onchange="toggleRotationMode(this.checked)">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="info-banner">
+                <div class="info-banner-icon"><i class="fas fa-info-circle"></i></div>
+                <p>Khi bật <strong>Quota-Aware Rotation</strong>, hệ thống tự động chuyển đổi giữa các token dựa trên quota <code>premium_interactions</code> còn lại. Token có quota cao nhất sẽ được ưu tiên. Chế độ chọn từng token sẽ bị <strong>vô hiệu hóa</strong>.</p>
+              </div>
+              <div id="rotation-tokens-list"></div>
+              <div id="rotation-actions" class="hidden" style="margin-top:12px">
+                <button class="btn btn-primary" onclick="saveRotationSettings()">
+                  <i class="fas fa-save"></i> Lưu & Kích hoạt
+                </button>
               </div>
             </div>
           </div>

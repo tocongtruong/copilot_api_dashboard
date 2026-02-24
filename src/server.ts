@@ -70,3 +70,15 @@ server.route("/v1/embeddings", embeddingRoutes)
 
 // Anthropic compatible endpoints
 server.route("/v1/messages", messageRoutes)
+
+// Internal endpoint for rotation mode notification
+server.post("/internal/rotation-mode", async (c) => {
+  try {
+    const body = await c.req.json() as { rotation_enabled?: boolean }
+    state.rotationEnabled = !!body.rotation_enabled
+    return c.json({ success: true, rotation_enabled: state.rotationEnabled })
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    return c.json({ error: "Failed to update rotation mode", details: errMsg }, 500)
+  }
+})

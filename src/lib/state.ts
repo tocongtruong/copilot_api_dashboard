@@ -4,6 +4,7 @@ export interface State {
   githubToken?: string
   copilotToken?: string
   activeGithubTokenName?: string
+  rotationEnabled: boolean
 
   accountType: string
   models?: ModelsResponse
@@ -23,4 +24,5 @@ export const state: State = {
   manualApprove: false,
   rateLimitWait: false,
   showToken: false,
+  rotationEnabled: false,
 }

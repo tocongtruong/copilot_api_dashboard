@@ -128,6 +128,20 @@ async function initDb() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS rotation_settings (
+      id TEXT PRIMARY KEY DEFAULT 'global',
+      enabled INTEGER DEFAULT 0,
+      token_ids TEXT DEFAULT '[]',
+      current_token_id TEXT,
+      check_interval_seconds INTEGER DEFAULT 60,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  const rotRow = db.exec("SELECT id FROM rotation_settings WHERE id = 'global'");
+  if (!rotRow.length || !rotRow[0].values.length) {
+    db.run("INSERT INTO rotation_settings (id) VALUES ('global')");
+  }
 
   // Migration: add github_token_name column if not exists
   try {
@@ -463,13 +477,18 @@ app.post('/api/github-auth/poll', authMiddleware, async (req, res) => {
       const tokenName = name || `GitHub Auth ${new Date().toLocaleString('vi-VN')}`;
       const tokenId = uuidv4();
 
-      dbRun('INSERT INTO github_tokens (id, name, token, user_id) VALUES (?, ?, ?, ?)',
-        [tokenId, tokenName, data.access_token, req.user.id]);
-
-      // Deactivate others and activate this one, then push
-      dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ? AND id != ?', [req.user.id, tokenId]);
-      dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ?', [tokenId]);
-      pushTokenToCopilotApi(data.access_token, tokenName);
+      const rotCheck = dbGet("SELECT enabled FROM rotation_settings WHERE id = 'global'");
+      if (rotCheck && rotCheck.enabled) {
+        dbRun('INSERT INTO github_tokens (id, name, token, user_id, is_active) VALUES (?, ?, ?, ?, 0)',
+          [tokenId, tokenName, data.access_token, req.user.id]);
+      } else {
+        dbRun('INSERT INTO github_tokens (id, name, token, user_id) VALUES (?, ?, ?, ?)',
+          [tokenId, tokenName, data.access_token, req.user.id]);
+        // Deactivate others and activate this one, then push
+        dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ? AND id != ?', [req.user.id, tokenId]);
+        dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ?', [tokenId]);
+        pushTokenToCopilotApi(data.access_token, tokenName);
+      }
 
       authSessions.delete(session_id);
       res.json({
@@ -510,17 +529,27 @@ app.post('/api/github-tokens', authMiddleware, (req, res) => {
   if (!name || !token) return res.status(400).json({ error: 'Name and token are required' });
 
   const id = uuidv4();
-  // Deactivate all other tokens, then insert new one as active
-  dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ?', [req.user.id]);
-  dbRun('INSERT INTO github_tokens (id, name, token, user_id, is_active) VALUES (?, ?, ?, ?, 1)', [id, name, token, req.user.id]);
+  const rotSettings = dbGet("SELECT enabled FROM rotation_settings WHERE id = 'global'");
 
-  // Push to copilot-api with token name
-  pushTokenToCopilotApi(token, name);
+  if (rotSettings && rotSettings.enabled) {
+    // In rotation mode, just add token without activating
+    dbRun('INSERT INTO github_tokens (id, name, token, user_id, is_active) VALUES (?, ?, ?, ?, 0)', [id, name, token, req.user.id]);
+  } else {
+    // Deactivate all other tokens, then insert new one as active
+    dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ?', [req.user.id]);
+    dbRun('INSERT INTO github_tokens (id, name, token, user_id, is_active) VALUES (?, ?, ?, ?, 1)', [id, name, token, req.user.id]);
+    // Push to copilot-api with token name
+    pushTokenToCopilotApi(token, name);
+  }
 
   res.json({ success: true, id });
 });
 
 app.put('/api/github-tokens/:id/activate', authMiddleware, (req, res) => {
+  const rotSettings = dbGet("SELECT enabled FROM rotation_settings WHERE id = 'global'");
+  if (rotSettings && rotSettings.enabled) {
+    return res.status(400).json({ error: 'Đang ở chế độ xoay tài khoản. Tắt chế độ xoay để chuyển token thủ công.' });
+  }
   dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ?', [req.user.id]);
   dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
 
@@ -532,12 +561,16 @@ app.put('/api/github-tokens/:id/activate', authMiddleware, (req, res) => {
 });
 
 app.put('/api/github-tokens/:id/deactivate', authMiddleware, (req, res) => {
+  const rotSettings = dbGet("SELECT enabled FROM rotation_settings WHERE id = 'global'");
+  if (rotSettings && rotSettings.enabled) {
+    return res.status(400).json({ error: 'Đang ở chế độ xoay tài khoản. Tắt chế độ xoay để chuyển token thủ công.' });
+  }
   dbRun('UPDATE github_tokens SET is_active = 0 WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
 
   // Check if any token is still active; if not, clear copilot-api token
   const anyActive = dbGet('SELECT id FROM github_tokens WHERE user_id = ? AND is_active = 1', [req.user.id]);
   if (!anyActive) {
-    pushTokenToCopilotApi(null, null); // This will call clear on the other end if implemented or we can just call fetch for clear
+    pushTokenToCopilotApi(null, null);
   }
   res.json({ success: true });
 });
@@ -561,6 +594,249 @@ app.delete('/api/github-tokens/:id', authMiddleware, (req, res) => {
   }
   res.json({ success: true });
 });
+
+// ==================== QUOTA CHECK ====================
+
+const COPILOT_CHAT_VERSION = '0.26.7';
+const quotaCache = new Map();
+const QUOTA_CACHE_TTL = 60000;
+
+async function fetchQuotaForGithubToken(githubToken) {
+  const headers = {
+    'content-type': 'application/json',
+    'accept': 'application/json',
+    'authorization': `token ${githubToken}`,
+    'editor-version': 'vscode/1.97.2',
+    'editor-plugin-version': `copilot-chat/${COPILOT_CHAT_VERSION}`,
+    'user-agent': `GitHubCopilotChat/${COPILOT_CHAT_VERSION}`,
+    'x-github-api-version': '2025-04-01',
+  };
+
+  // Use /copilot_internal/user endpoint (same as /usage) - returns full quota info
+  const response = await fetch('https://api.github.com/copilot_internal/user', {
+    headers,
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(`GitHub API error ${response.status}: ${errText.substring(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return {
+    login: data.login || null,
+    copilot_plan: data.copilot_plan || null,
+    access_type_sku: data.access_type_sku || null,
+    chat_enabled: data.chat_enabled ?? null,
+    quota_reset_date: data.quota_reset_date || null,
+    quota_reset_date_utc: data.quota_reset_date_utc || null,
+    quota_snapshots: data.quota_snapshots || {},
+    assigned_date: data.assigned_date || null,
+  };
+}
+
+app.get('/api/github-tokens/check-quota-all', authMiddleware, async (req, res) => {
+  try {
+    const tokens = dbAll('SELECT id, name, token FROM github_tokens WHERE user_id = ?', [req.user.id]);
+    const results = [];
+    for (const token of tokens) {
+      try {
+        const cached = quotaCache.get(token.id);
+        let quota;
+        if (cached && Date.now() - cached.fetchedAt < QUOTA_CACHE_TTL) {
+          quota = cached.data;
+        } else {
+          quota = await fetchQuotaForGithubToken(token.token);
+          quotaCache.set(token.id, { data: quota, fetchedAt: Date.now() });
+        }
+        results.push({ token_id: token.id, token_name: token.name, ...quota, error: null });
+      } catch (err) {
+        results.push({ token_id: token.id, token_name: token.name, error: err.message });
+      }
+    }
+    res.json({ quotas: results });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to check quotas', details: err.message });
+  }
+});
+
+app.get('/api/github-tokens/:id/check-quota', authMiddleware, async (req, res) => {
+  try {
+    const token = dbGet('SELECT id, name, token FROM github_tokens WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    if (!token) return res.status(404).json({ error: 'Token not found' });
+
+    const cached = quotaCache.get(token.id);
+    if (cached && Date.now() - cached.fetchedAt < QUOTA_CACHE_TTL) {
+      return res.json({ ...cached.data, cached: true });
+    }
+
+    const quota = await fetchQuotaForGithubToken(token.token);
+    quotaCache.set(token.id, { data: quota, fetchedAt: Date.now() });
+    res.json({ ...quota, cached: false });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to check quota', details: err.message });
+  }
+});
+
+// ==================== ROTATION SETTINGS ====================
+
+app.get('/api/rotation/settings', authMiddleware, (req, res) => {
+  const settings = dbGet("SELECT * FROM rotation_settings WHERE id = 'global'");
+  res.json({
+    enabled: !!settings?.enabled,
+    token_ids: JSON.parse(settings?.token_ids || '[]'),
+    current_token_id: settings?.current_token_id,
+    check_interval_seconds: settings?.check_interval_seconds || 60,
+  });
+});
+
+app.put('/api/rotation/settings', authMiddleware, async (req, res) => {
+  const { enabled, token_ids, check_interval_seconds } = req.body;
+
+  if (token_ids) {
+    for (const tid of token_ids) {
+      const t = dbGet('SELECT id FROM github_tokens WHERE id = ? AND user_id = ?', [tid, req.user.id]);
+      if (!t) return res.status(400).json({ error: `Token ${tid} not found` });
+    }
+  }
+
+  const current = dbGet("SELECT * FROM rotation_settings WHERE id = 'global'");
+  const newEnabled = enabled !== undefined ? (enabled ? 1 : 0) : (current?.enabled || 0);
+  const newTokenIds = token_ids !== undefined ? JSON.stringify(token_ids) : (current?.token_ids || '[]');
+  const newInterval = check_interval_seconds || current?.check_interval_seconds || 60;
+
+  dbRun(`UPDATE rotation_settings SET enabled = ?, token_ids = ?, check_interval_seconds = ?, updated_at = ? WHERE id = 'global'`,
+    [newEnabled, newTokenIds, newInterval, vnNow()]);
+
+  if (newEnabled) {
+    // Deactivate all individual tokens
+    dbRun('UPDATE github_tokens SET is_active = 0 WHERE user_id = ?', [req.user.id]);
+    // Pick the best token from rotation pool
+    const bestToken = await pickBestRotationToken(req.user.id);
+    if (bestToken) {
+      dbRun("UPDATE rotation_settings SET current_token_id = ? WHERE id = 'global'", [bestToken.id]);
+      dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ?', [bestToken.id]);
+      pushTokenToCopilotApi(bestToken.token, bestToken.name);
+    }
+    startRotationWorker();
+  } else {
+    stopRotationWorker();
+    dbRun("UPDATE rotation_settings SET current_token_id = NULL WHERE id = 'global'");
+  }
+
+  notifyRotationMode(!!newEnabled);
+  res.json({ success: true, enabled: !!newEnabled });
+});
+
+// ==================== ROTATION WORKER ====================
+
+let rotationWorkerInterval = null;
+
+async function pickBestRotationToken(userId) {
+  const settings = dbGet("SELECT * FROM rotation_settings WHERE id = 'global'");
+  if (!settings || !settings.enabled) return null;
+
+  const tokenIds = JSON.parse(settings.token_ids || '[]');
+  if (tokenIds.length === 0) return null;
+
+  let bestToken = null;
+  let bestRemaining = -Infinity;
+
+  for (const tokenId of tokenIds) {
+    const token = dbGet('SELECT id, name, token FROM github_tokens WHERE id = ?', [tokenId]);
+    if (!token) continue;
+
+    try {
+      let quota;
+      const cached = quotaCache.get(token.id);
+      if (cached && Date.now() - cached.fetchedAt < QUOTA_CACHE_TTL) {
+        quota = cached.data;
+      } else {
+        quota = await fetchQuotaForGithubToken(token.token);
+        quotaCache.set(token.id, { data: quota, fetchedAt: Date.now() });
+      }
+
+      const premium = quota.quota_snapshots?.premium_interactions;
+      if (premium) {
+        if (premium.unlimited) return token; // Unlimited always wins
+        if (premium.remaining > bestRemaining) {
+          bestRemaining = premium.remaining;
+          bestToken = token;
+        }
+      } else {
+        // No premium info, use as fallback
+        if (!bestToken) bestToken = token;
+      }
+    } catch (err) {
+      console.warn(`[Rotation] Failed to check quota for "${token.name}":`, err.message);
+      if (!bestToken) bestToken = token;
+    }
+  }
+
+  return bestToken;
+}
+
+async function rotationCheck() {
+  try {
+    const settings = dbGet("SELECT * FROM rotation_settings WHERE id = 'global'");
+    if (!settings || !settings.enabled) return;
+
+    console.log('[Rotation] Checking quotas...');
+    const adminUser = dbGet("SELECT id FROM users WHERE role = 'admin'");
+    if (!adminUser) return;
+
+    const bestToken = await pickBestRotationToken(adminUser.id);
+    if (!bestToken) {
+      console.log('[Rotation] No suitable token found.');
+      return;
+    }
+
+    if (bestToken.id !== settings.current_token_id) {
+      console.log(`[Rotation] Switching to "${bestToken.name}" (${bestToken.id})`);
+      dbRun('UPDATE github_tokens SET is_active = 0');
+      dbRun('UPDATE github_tokens SET is_active = 1 WHERE id = ?', [bestToken.id]);
+      dbRun("UPDATE rotation_settings SET current_token_id = ? WHERE id = 'global'", [bestToken.id]);
+      pushTokenToCopilotApi(bestToken.token, bestToken.name);
+    } else {
+      // Log quota info for current token
+      const cached = quotaCache.get(bestToken.id);
+      const remaining = cached?.data?.quota_snapshots?.premium_interactions?.remaining;
+      console.log(`[Rotation] Current token "${bestToken.name}" still best (remaining: ${remaining ?? 'unknown'})`);
+    }
+  } catch (err) {
+    console.error('[Rotation] Check failed:', err);
+  }
+}
+
+function startRotationWorker() {
+  stopRotationWorker();
+  const settings = dbGet("SELECT * FROM rotation_settings WHERE id = 'global'");
+  const interval = (settings?.check_interval_seconds || 60) * 1000;
+  console.log(`[Rotation] Worker started (interval: ${interval / 1000}s)`);
+  rotationWorkerInterval = setInterval(rotationCheck, interval);
+  rotationCheck();
+}
+
+function stopRotationWorker() {
+  if (rotationWorkerInterval) {
+    clearInterval(rotationWorkerInterval);
+    rotationWorkerInterval = null;
+    console.log('[Rotation] Worker stopped.');
+  }
+}
+
+function notifyRotationMode(enabled) {
+  fetch(`${COPILOT_API_URL}/internal/rotation-mode`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Internal-Secret': process.env.INTERNAL_SECRET || 'internal-secret',
+    },
+    body: JSON.stringify({ rotation_enabled: enabled }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => {});
+}
 
 // ==================== STATS ROUTES ====================
 
@@ -800,6 +1076,13 @@ async function start() {
       }, 5000);
     } else {
       console.log('[Startup] No active GitHub token. Use the dashboard to add one.');
+    }
+
+    // Start rotation worker if enabled
+    const rotSettings = dbGet("SELECT * FROM rotation_settings WHERE id = 'global'");
+    if (rotSettings && rotSettings.enabled) {
+      console.log('[Startup] Rotation mode is enabled, starting worker...');
+      setTimeout(() => startRotationWorker(), 7000);
     }
   });
 }

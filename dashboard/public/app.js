@@ -389,38 +389,191 @@ function copyKey() {
 let authPollInterval = null;
 let authTimerInterval = null;
 let currentAuthSessionId = null;
+let currentRotationSettings = { enabled: false, token_ids: [], current_token_id: null };
+let allTokensData = [];
+let quotaData = {};
+
+function renderQuotaCell(tokenId) {
+  const quota = quotaData[tokenId];
+  if (!quota) return '<span style="color:var(--text-muted);font-size:12px">—</span>';
+  if (quota.error) return `<span style="color:var(--red);font-size:11px" title="${escapeHtml(quota.error)}"><i class="fas fa-exclamation-triangle"></i> Lỗi</span>`;
+
+  const snaps = quota.quota_snapshots;
+  const premium = snaps?.premium_interactions;
+  const chat = snaps?.chat;
+  const completions = snaps?.completions;
+
+  // If no quota_snapshots at all
+  if (!snaps || Object.keys(snaps).length === 0) {
+    return `<div class="quota-info" style="cursor:pointer" onclick="showQuotaDetail('${tokenId}')">
+      <span style="color:var(--orange);font-size:11px"><i class="fas fa-info-circle"></i> No quota data</span>
+    </div>`;
+  }
+
+  let premiumHtml = '';
+  if (premium) {
+    if (premium.unlimited) {
+      premiumHtml = '<span class="badge badge-green" style="font-size:10px"><i class="fas fa-infinity" style="margin-right:3px"></i>Premium: ∞</span>';
+    } else {
+      const pct = Math.max(0, premium.percent_remaining || 0);
+      const colorClass = pct > 50 ? 'green' : pct > 20 ? 'orange' : 'red';
+      premiumHtml = `
+        <div style="font-size:11px"><span style="color:var(--text-secondary)">Premium:</span> <span style="color:var(--${colorClass});font-weight:600">${premium.remaining}</span><span style="color:var(--text-muted)">/${premium.entitlement}</span></div>
+        <div class="quota-bar"><div class="quota-bar-fill ${colorClass}" style="width:${Math.max(0, pct)}%"></div></div>
+      `;
+    }
+  }
+
+  let chatHtml = '';
+  if (chat) {
+    chatHtml = chat.unlimited
+      ? '<span style="font-size:10px;color:var(--green)"><i class="fas fa-infinity" style="font-size:8px"></i> Chat: ∞</span>'
+      : `<span style="font-size:10px;color:var(--text-secondary)">Chat: ${chat.remaining}/${chat.entitlement}</span>`;
+  }
+
+  let completionsHtml = '';
+  if (completions) {
+    completionsHtml = completions.unlimited
+      ? '<span style="font-size:10px;color:var(--green)"><i class="fas fa-infinity" style="font-size:8px"></i> Code: ∞</span>'
+      : `<span style="font-size:10px;color:var(--text-secondary)">Code: ${completions.remaining}/${completions.entitlement}</span>`;
+  }
+
+  return `
+    <div class="quota-info" style="cursor:pointer" onclick="showQuotaDetail('${tokenId}')">
+      ${premiumHtml}
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:2px">${chatHtml}${completionsHtml}</div>
+      <div style="font-size:9px;color:var(--text-muted);margin-top:1px">Reset: ${quota.quota_reset_date || '—'}</div>
+    </div>
+  `;
+}
+
+function showQuotaDetail(tokenId) {
+  const quota = quotaData[tokenId];
+  if (!quota) { showToast('Chưa có dữ liệu quota. Hãy check quota trước.', 'info'); return; }
+
+  const snaps = quota.quota_snapshots || {};
+  const categories = Object.entries(snaps);
+
+  let categoriesHtml = '';
+  if (categories.length === 0) {
+    categoriesHtml = '<p style="color:var(--text-muted);padding:12px">Không có dữ liệu quota.</p>';
+  } else {
+    categoriesHtml = categories.map(([key, val]) => {
+      const isUnlimited = val.unlimited;
+      const pct = Math.max(0, val.percent_remaining || 0);
+      const colorClass = isUnlimited ? 'green' : pct > 50 ? 'green' : pct > 20 ? 'orange' : 'red';
+      const used = val.entitlement - val.remaining;
+      return `
+        <div class="quota-detail-item">
+          <div class="quota-detail-header">
+            <span class="quota-detail-name">${escapeHtml(key.replace(/_/g, ' '))}</span>
+            ${isUnlimited
+              ? '<span class="badge badge-green"><i class="fas fa-infinity"></i> Unlimited</span>'
+              : `<span class="badge badge-${colorClass}">${val.remaining}/${val.entitlement} (${Math.round(pct)}%)</span>`
+            }
+          </div>
+          ${!isUnlimited ? `
+            <div class="quota-bar" style="height:6px;margin-top:8px"><div class="quota-bar-fill ${colorClass}" style="width:${Math.max(0, pct)}%"></div></div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:11px">
+              <span style="color:var(--text-muted)">Đã dùng: <strong style="color:var(--text-secondary)">${used}</strong></span>
+              <span style="color:var(--text-muted)">Còn lại: <strong style="color:var(--${colorClass})">${val.remaining}</strong></span>
+            </div>
+          ` : ''}
+          <div class="quota-detail-meta">
+            ${val.overage_count > 0 ? `<span style="color:var(--red)">Overage: ${val.overage_count}</span>` : ''}
+            ${val.overage_permitted ? '<span style="color:var(--orange)">Overage cho phép</span>' : '<span>Overage: không</span>'}
+            <span>Cập nhật: ${val.timestamp_utc ? new Date(val.timestamp_utc).toLocaleString('vi-VN') : 'N/A'}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  const tokenName = allTokensData.find(t => t.id === tokenId)?.name || 'Unknown';
+  const modalHtml = `
+    <div id="modal-quota-detail" class="modal">
+      <div class="modal-backdrop" onclick="closeModal('modal-quota-detail');document.getElementById('modal-quota-detail').remove()"></div>
+      <div class="modal-dialog animate-modal" style="max-width:520px">
+        <div class="modal-header">
+          <h2><i class="fas fa-chart-pie" style="color:var(--blue)"></i> Quota: ${escapeHtml(tokenName)}</h2>
+          <button class="modal-close" onclick="closeModal('modal-quota-detail');document.getElementById('modal-quota-detail').remove()"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="modal-body">
+          <div class="quota-detail-info-grid">
+            <div class="quota-detail-info-item"><span class="quota-detail-label">Login</span><span class="quota-detail-value">${escapeHtml(quota.login || 'N/A')}</span></div>
+            <div class="quota-detail-info-item"><span class="quota-detail-label">Plan</span><span class="quota-detail-value">${escapeHtml(quota.copilot_plan || 'N/A')}</span></div>
+            <div class="quota-detail-info-item"><span class="quota-detail-label">SKU</span><span class="quota-detail-value" style="font-size:11px">${escapeHtml(quota.access_type_sku || 'N/A')}</span></div>
+            <div class="quota-detail-info-item"><span class="quota-detail-label">Reset Date</span><span class="quota-detail-value">${escapeHtml(quota.quota_reset_date || 'N/A')}</span></div>
+          </div>
+          <div style="margin-top:16px">
+            <h3 style="font-size:14px;margin-bottom:10px;color:var(--text-secondary)"><i class="fas fa-layer-group" style="margin-right:6px"></i>Quota Categories</h3>
+            ${categoriesHtml}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  const existing = document.getElementById('modal-quota-detail');
+  if (existing) existing.remove();
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  showModal('modal-quota-detail');
+}
 
 async function loadGithubTokens() {
   try {
-    const data = await api('/api/github-tokens');
+    const [tokenData, rotData] = await Promise.all([
+      api('/api/github-tokens'),
+      api('/api/rotation/settings'),
+    ]);
+    allTokensData = tokenData.tokens;
+    currentRotationSettings = rotData;
+
+    const isRotation = currentRotationSettings.enabled;
+    const rotToggle = document.getElementById('rotation-toggle');
+    if (rotToggle) rotToggle.checked = isRotation;
+
     const tbody = document.querySelector('#github-tokens-table tbody');
-    if (data.tokens.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:40px">Chưa có GitHub Token nào</td></tr>';
+    if (allTokensData.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:40px">Chưa có GitHub Token nào</td></tr>';
     } else {
-      tbody.innerHTML = data.tokens.map(token => `
-        <tr>
-          <td><strong>${escapeHtml(token.name)}</strong></td>
-          <td><code style="color:var(--text-muted);font-size:12px">${escapeHtml(token.token_preview)}</code></td>
-          <td>
-            <div style="display:flex;align-items:center;gap:10px">
-              <label class="toggle-switch">
-                <input type="checkbox" ${token.is_active ? 'checked' : ''} onchange="toggleGithubToken('${token.id}', this.checked)">
-                <span class="toggle-slider"></span>
-              </label>
-              <span style="font-size:12px;color:${token.is_active ? 'var(--green)' : 'var(--text-muted)'}">
-                ${token.is_active ? 'Đang dùng' : 'Tắt'}
-              </span>
-            </div>
-          </td>
-          <td style="color:var(--text-secondary);font-size:12px">${formatDate(token.created_at)}</td>
-          <td>
-            <button class="btn-action danger" onclick="deleteGithubToken('${token.id}')" title="Xóa">
-              <i class="fas fa-trash"></i>
-            </button>
-          </td>
-        </tr>
-      `).join('');
+      tbody.innerHTML = allTokensData.map(token => {
+        const isCurrentRotation = isRotation && token.id === currentRotationSettings.current_token_id;
+        const toggleDisabled = isRotation ? 'disabled' : '';
+        return `
+          <tr>
+            <td>
+              <strong>${escapeHtml(token.name)}</strong>
+              ${isCurrentRotation ? '<br><span class="badge badge-green" style="font-size:10px;margin-top:2px"><i class="fas fa-sync-alt" style="font-size:8px;margin-right:2px"></i>Rotation Active</span>' : ''}
+            </td>
+            <td><code style="color:var(--text-muted);font-size:12px">${escapeHtml(token.token_preview)}</code></td>
+            <td>${renderQuotaCell(token.id)}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:10px">
+                <label class="toggle-switch ${isRotation ? 'disabled' : ''}">
+                  <input type="checkbox" ${token.is_active ? 'checked' : ''} ${toggleDisabled} onchange="toggleGithubToken('${token.id}', this.checked)">
+                  <span class="toggle-slider"></span>
+                </label>
+                <span style="font-size:12px;color:${token.is_active ? 'var(--green)' : 'var(--text-muted)'}">
+                  ${token.is_active ? (isRotation ? 'Rotation' : 'Đang dùng') : 'Tắt'}
+                </span>
+              </div>
+            </td>
+            <td style="color:var(--text-secondary);font-size:12px">${formatDate(token.created_at)}</td>
+            <td>
+              <div style="display:flex;gap:4px">
+                <button class="btn-action" onclick="checkTokenQuota('${token.id}')" title="Check Quota">
+                  <i class="fas fa-chart-pie"></i>
+                </button>
+                <button class="btn-action danger" onclick="deleteGithubToken('${token.id}')" title="Xóa">
+                  <i class="fas fa-trash"></i>
+                </button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
     }
+    renderRotationTokensList();
   } catch (err) {
     showToast('Lỗi: ' + err.message, 'error');
   }
@@ -583,6 +736,143 @@ function updateTimer(seconds) {
 function copyAuthCode() {
   const code = document.getElementById('auth-user-code').textContent;
   navigator.clipboard.writeText(code).then(() => showToast('Đã copy mã code!', 'success'));
+}
+
+// ==================== Quota & Rotation ====================
+
+async function checkTokenQuota(tokenId) {
+  try {
+    showToast('Đang kiểm tra quota...', 'info');
+    const data = await api(`/api/github-tokens/${tokenId}/check-quota`);
+    quotaData[tokenId] = data;
+    loadGithubTokens();
+    showToast('Đã cập nhật quota!', 'success');
+  } catch (err) {
+    showToast('Lỗi check quota: ' + err.message, 'error');
+  }
+}
+
+async function checkAllQuotas() {
+  const btn = document.getElementById('btn-check-quotas');
+  try {
+    btn.disabled = true;
+    btn.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle"></div> Đang kiểm tra...';
+    const data = await api('/api/github-tokens/check-quota-all');
+    data.quotas.forEach(q => {
+      if (!q.error) {
+        quotaData[q.token_id] = q;
+      }
+    });
+    loadGithubTokens();
+    showToast(`Đã kiểm tra quota ${data.quotas.length} token(s)!`, 'success');
+  } catch (err) {
+    showToast('Lỗi: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-chart-pie"></i> Check Quotas';
+  }
+}
+
+function renderRotationTokensList() {
+  const container = document.getElementById('rotation-tokens-list');
+  const actionsEl = document.getElementById('rotation-actions');
+  if (!container || !actionsEl) return;
+
+  if (allTokensData.length === 0) {
+    container.innerHTML = '<p style="color:var(--text-muted);padding:12px 0">Chưa có token nào.</p>';
+    actionsEl.classList.add('hidden');
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="rotation-token-list">
+      ${allTokensData.map(token => {
+        const isSelected = currentRotationSettings.token_ids.includes(token.id);
+        const isCurrent = currentRotationSettings.enabled && token.id === currentRotationSettings.current_token_id;
+        const quota = quotaData[token.id];
+        const premium = quota?.quota_snapshots?.premium_interactions;
+        let quotaText = '<span style="color:var(--text-muted)">Chưa kiểm tra quota</span>';
+        if (quota) {
+          if (premium) {
+            if (premium.unlimited) {
+              quotaText = '<span style="color:var(--green)">∞ Unlimited</span>';
+            } else {
+              const pct = Math.max(0, Math.round(premium.percent_remaining || 0));
+              const color = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--orange)' : 'var(--red)';
+              quotaText = `<span style="color:${color};font-weight:600">${premium.remaining}/${premium.entitlement}</span> premium (${pct}%)`;
+            }
+          }
+          if (quota.quota_reset_date) {
+            quotaText += ` <span style="color:var(--text-muted)">• Reset: ${quota.quota_reset_date}</span>`;
+          }
+        }
+        return `
+          <label class="rotation-token-item ${isCurrent ? 'active' : ''}">
+            <input type="checkbox" class="rotation-token-checkbox" value="${token.id}" ${isSelected ? 'checked' : ''}>
+            <div class="rotation-token-info">
+              <div class="rotation-token-name">
+                ${escapeHtml(token.name)}
+                ${isCurrent ? '<span class="badge badge-green" style="font-size:10px;margin-left:6px"><i class="fas fa-play" style="font-size:8px;margin-right:2px"></i>Đang dùng</span>' : ''}
+              </div>
+              <div class="rotation-token-quota">${quotaText}</div>
+            </div>
+          </label>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  actionsEl.classList.remove('hidden');
+  actionsEl.style.display = 'flex';
+}
+
+async function toggleRotationMode(enabled) {
+  if (enabled && allTokensData.length < 2) {
+    showToast('Cần ít nhất 2 token để sử dụng chế độ xoay!', 'error');
+    document.getElementById('rotation-toggle').checked = false;
+    return;
+  }
+
+  if (enabled) {
+    try {
+      showToast('Đang kiểm tra quota...', 'info');
+      const data = await api('/api/github-tokens/check-quota-all');
+      data.quotas.forEach(q => { if (!q.error) quotaData[q.token_id] = q; });
+    } catch { /* continue */ }
+
+    // Pre-select tokens with remaining > 0
+    currentRotationSettings.token_ids = allTokensData.filter(t => {
+      const q = quotaData[t.id];
+      if (!q) return true;
+      const p = q.quota_snapshots?.premium_interactions;
+      if (!p) return true;
+      return p.unlimited || p.remaining > 0;
+    }).map(t => t.id);
+  }
+
+  renderRotationTokensList();
+}
+
+async function saveRotationSettings() {
+  try {
+    const isEnabled = document.getElementById('rotation-toggle').checked;
+    const selectedIds = Array.from(document.querySelectorAll('.rotation-token-checkbox:checked')).map(cb => cb.value);
+
+    if (isEnabled && selectedIds.length < 2) {
+      showToast('Cần chọn ít nhất 2 token để xoay!', 'error');
+      return;
+    }
+
+    await api('/api/rotation/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: isEnabled, token_ids: selectedIds }),
+    });
+
+    showToast(isEnabled ? 'Đã bật Quota-Aware Rotation!' : 'Đã tắt chế độ xoay.', 'success');
+    loadGithubTokens();
+  } catch (err) {
+    showToast('Lỗi: ' + err.message, 'error');
+  }
 }
 
 // ==================== Logs ====================
